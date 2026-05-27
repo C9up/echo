@@ -4,23 +4,20 @@
 	"description": "Cache — pluggable cache contract with memory + Redis drivers for the Ream framework",
 	"license": "MIT",
 	"type": "module",
-	"main": "./dist/index.js",
-	"types": "./dist/index.d.ts",
+	"main": "./src/index.ts",
+	"types": "./src/index.ts",
 	"exports": {
 		".": {
-			"types": "./dist/index.d.ts",
-			"development": "./src/index.ts",
-			"import": "./dist/index.js"
+			"types": "./src/index.ts",
+			"import": "./src/index.ts"
 		},
 		"./provider": {
-			"types": "./dist/EchoProvider.d.ts",
-			"development": "./src/EchoProvider.ts",
-			"import": "./dist/EchoProvider.js"
+			"types": "./src/EchoProvider.ts",
+			"import": "./src/EchoProvider.ts"
 		},
 		"./services/main": {
-			"types": "./dist/services/main.d.ts",
-			"development": "./src/services/main.ts",
-			"import": "./dist/services/main.js"
+			"types": "./src/services/main.ts",
+			"import": "./src/services/main.ts"
 		}
 	},
 	"scripts": {
@@ -46,5 +43,23 @@
 		"dist",
 		"README.md",
 		"LICENSE"
-	]
+	],
+	"publishConfig": {
+		"main": "./dist/index.js",
+		"types": "./dist/index.d.ts",
+		"exports": {
+			".": {
+				"types": "./dist/index.d.ts",
+				"import": "./dist/index.js"
+			},
+			"./provider": {
+				"types": "./dist/EchoProvider.d.ts",
+				"import": "./dist/EchoProvider.js"
+			},
+			"./services/main": {
+				"types": "./dist/services/main.d.ts",
+				"import": "./dist/services/main.js"
+			}
+		}
+	}
 }
