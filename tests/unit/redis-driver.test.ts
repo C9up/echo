@@ -246,8 +246,12 @@ describe("echo > RedisDriver > tagging", () => {
 		// Re-tag the same key under a different group.
 		await driver.setWithTags("article:42", { v: 2 }, ["homepage"]);
 		// Old tag-set must no longer reference the key.
-		expect(fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false).toBe(false);
-		expect(fake.sets.get("cache:tag:homepage")?.has("cache:article:42")).toBe(true);
+		expect(
+			fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false,
+		).toBe(false);
+		expect(fake.sets.get("cache:tag:homepage")?.has("cache:article:42")).toBe(
+			true,
+		);
 		// Crucial assertion: flushing the OLD tag must NOT wipe the current value.
 		await driver.flushTags(["news"]);
 		expect(await driver.get("article:42")).toEqual({ v: 2 });
@@ -261,8 +265,12 @@ describe("echo > RedisDriver > tagging", () => {
 		// Both tag-sets must be cleaned — otherwise a later flushTags(['news'])
 		// would no-op-delete a non-existent key (or, worse, delete a future
 		// key reusing the slot).
-		expect(fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false).toBe(false);
-		expect(fake.sets.get("cache:tag:fr")?.has("cache:article:42") ?? false).toBe(false);
+		expect(
+			fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false,
+		).toBe(false);
+		expect(
+			fake.sets.get("cache:tag:fr")?.has("cache:article:42") ?? false,
+		).toBe(false);
 		// Reverse-index gone too.
 		expect(fake.sets.has("cache:meta:tags:article:42")).toBe(false);
 	});
@@ -275,7 +283,9 @@ describe("echo > RedisDriver > tagging", () => {
 		// Value gone, both tag-sets cleaned (no dangling reference in homepage).
 		expect(await driver.get("article:42")).toBe(null);
 		expect(fake.sets.has("cache:tag:news")).toBe(false);
-		expect(fake.sets.get("cache:tag:homepage")?.has("cache:article:42") ?? false).toBe(false);
+		expect(
+			fake.sets.get("cache:tag:homepage")?.has("cache:article:42") ?? false,
+		).toBe(false);
 	});
 });
 
