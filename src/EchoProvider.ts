@@ -1,6 +1,6 @@
 import { type CacheConfig, CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
-import { _setCache } from "./services/main.js";
+import { setCache } from "./services/main.js";
 
 /**
  * Duck-typed host context — echo stays publishable without importing
@@ -24,7 +24,7 @@ export interface EchoProviderConfig extends CacheConfig {
 	 * Driver to bind by default. Only `"memory"` is created
 	 * automatically — other drivers (Redis etc.) need custom client
 	 * wiring, so apps build the `CacheManager` themselves and call
-	 * `_setCache(...)` from `@c9up/echo/services/main`.
+	 * `setCache(...)` from `@c9up/echo/services/main`.
 	 *
 	 * Default `"memory"`.
 	 */
@@ -67,7 +67,7 @@ export default class EchoProvider {
 	}
 
 	async boot(): Promise<void> {
-		_setCache(this.app.container.resolve<CacheManager>(CacheManager));
+		setCache(this.app.container.resolve<CacheManager>(CacheManager));
 	}
 
 	async shutdown(): Promise<void> {}
