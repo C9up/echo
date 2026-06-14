@@ -77,11 +77,22 @@ export class RedisDriver implements CacheDriver {
 	}
 
 	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
+		const fullKey = this.#key(key);
+		// Reconcile tags: overwriting a previously-tagged key with an untagged
+		// value must drop it from its old tag sets + meta index, or a later
+		// flushTags would wrongly purge this fresh value (set() never touched the
+		// tag/meta keys, unlike delete()).
+		const metaKey = this.#metaKey(key);
+		const prevTags = await this.#client.smembers(metaKey);
+		for (const tag of prevTags) {
+			await this.#client.srem(`${this.#prefix}tag:${tag}`, fullKey);
+		}
+		if (prevTags.length > 0) await this.#client.del(metaKey);
 		const serialized = JSON.stringify(value);
 		if (ttlSeconds && ttlSeconds > 0) {
-			await this.#client.set(this.#key(key), serialized, "EX", ttlSeconds);
+			await this.#client.set(fullKey, serialized, "EX", ttlSeconds);
 		} else {
-			await this.#client.set(this.#key(key), serialized);
+			await this.#client.set(fullKey, serialized);
 		}
 	}
 

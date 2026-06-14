@@ -92,4 +92,14 @@ describe("cache > MemoryDriver", () => {
 		expect(await driver.get("b")).toBeNull();
 		expect(await driver.get("c")).toBe(3);
 	});
+
+	// Audit 2026-06-13: a plain set() over a tagged key left stale tag-index refs,
+	// so a later flushTags wrongly purged the fresh (untagged) value.
+	it("plain set() over a tagged key reconciles the tag index (no wrong-purge)", async () => {
+		const driver = new MemoryDriver();
+		await driver.setWithTags("k", 1, ["news"]);
+		await driver.set("k", 2); // overwrite, now untagged
+		await driver.flushTags(["news"]);
+		expect(await driver.get("k")).toBe(2);
+	});
 });

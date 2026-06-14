@@ -55,6 +55,13 @@ export class MemoryDriver implements CacheDriver {
 		}
 		const expiresAt =
 			ttlSeconds != null && ttlSeconds > 0 ? Date.now() + ttlSeconds * 1000 : 0;
+		// Reconcile the tag index: overwriting a previously-tagged key with an
+		// untagged value must drop its old tag-index refs, or a later flushTags
+		// would purge this fresh value (the F3 fix only covered setWithTags).
+		const prev = this.#store.get(key);
+		if (prev !== undefined) {
+			for (const t of prev.tags) this.#tagIndex.get(t)?.delete(key);
+		}
 		this.#store.set(key, { value, expiresAt, tags: [] });
 	}
 

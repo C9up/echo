@@ -226,6 +226,17 @@ describe("echo > RedisDriver > tagging", () => {
 		expect(fake.sets.has("cache:tag:news")).toBe(false);
 	});
 
+	// Audit 2026-06-13: a plain set() over a tagged key never touched the tag/meta
+	// keys, so a later flushTags wrongly purged the fresh (untagged) value.
+	it("plain set() over a tagged key drops it from old tag sets (no wrong-purge)", async () => {
+		const fake = createFakeRedis();
+		const driver = new RedisDriver(fake.client);
+		await driver.setWithTags("k", "v1", ["news"]);
+		await driver.set("k", "v2"); // overwrite, now untagged
+		await driver.flushTags(["news"]);
+		expect(await driver.get("k")).toBe("v2");
+	});
+
 	it("flushTags is a no-op when the tag has no members", async () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client);
