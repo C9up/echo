@@ -21,7 +21,7 @@ export class MemoryDriver implements CacheDriver {
 			const now = Date.now();
 			for (const [key, entry] of this.#store) {
 				if (entry.expiresAt > 0 && entry.expiresAt < now) {
-					this.#store.delete(key);
+					this.#evict(key, entry);
 				}
 			}
 		}, sweepIntervalMs);
@@ -41,10 +41,21 @@ export class MemoryDriver implements CacheDriver {
 		const entry = this.#store.get(key);
 		if (!entry) return null;
 		if (entry.expiresAt > 0 && entry.expiresAt < Date.now()) {
-			this.#store.delete(key);
+			this.#evict(key, entry);
 			return null;
 		}
 		return entry.value as T;
+	}
+
+	/**
+	 * Delete an entry AND scrub its tag-index refs. TTL expiry (sweep + lazy
+	 * get) must go through this — a bare `#store.delete` left dangling refs in
+	 * `#tagIndex`, which a later `set(key, vNew)` reusing the key would turn into
+	 * a wrong-purge under flushTags (audit 2026-06-13).
+	 */
+	#evict(key: string, entry: CacheEntry): void {
+		for (const tag of entry.tags) this.#tagIndex.get(tag)?.delete(key);
+		this.#store.delete(key);
 	}
 
 	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {

@@ -102,4 +102,18 @@ describe("cache > MemoryDriver", () => {
 		await driver.flushTags(["news"]);
 		expect(await driver.get("k")).toBe(2);
 	});
+
+	// Audit 2026-06-13: TTL expiry deleted from #store but left the entry's tag
+	// refs in #tagIndex; a later set() reusing the key then got wrong-purged by
+	// flushTags on the dead tag.
+	it("TTL expiry scrubs the tag index (no wrong-purge after key reuse)", async () => {
+		const driver = new MemoryDriver();
+		await driver.setWithTags("k", 1, ["news"], 0.05); // 50ms TTL
+		await new Promise((r) => setTimeout(r, 80)); // let it expire
+		expect(await driver.get("k")).toBeNull(); // lazy expiry must scrub the tag ref
+		await driver.set("k", 2); // reuse the key, untagged
+		await driver.flushTags(["news"]);
+		expect(await driver.get("k")).toBe(2);
+		driver.destroy();
+	});
 });
