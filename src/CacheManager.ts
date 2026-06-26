@@ -34,7 +34,7 @@ export interface CacheConfig {
 	ttl?: number;
 }
 
-export class CacheManager implements CacheDriver {
+export class CacheManager {
 	private driver: CacheDriver;
 	private prefix: string;
 	private defaultTtl: number;
@@ -70,12 +70,25 @@ export class CacheManager implements CacheDriver {
 		return this.driver.delete(this.prefixKey(key));
 	}
 
-	async flush(): Promise<void> {
+	/** Clear the whole cache (AdonisJS `cache.clear()`). */
+	async clear(): Promise<void> {
 		return this.driver.flush();
 	}
 
 	async has(key: string): Promise<boolean> {
 		return this.driver.has(this.prefixKey(key));
+	}
+
+	/**
+	 * A cache view scoped under an extra key prefix (AdonisJS `cache.namespace()`).
+	 * `cache.namespace('users').get('42')` reads/writes `users:42` (composed with
+	 * any existing prefix). Shares the same driver + default TTL.
+	 */
+	namespace(ns: string): CacheManager {
+		return new CacheManager(this.driver, {
+			prefix: this.prefix ? `${this.prefix}:${ns}` : ns,
+			ttl: this.defaultTtl,
+		});
 	}
 
 	/** Set a value with tags for grouped invalidation. */
@@ -116,8 +129,13 @@ export class CacheManager implements CacheDriver {
 	/** In-flight promises for stampede prevention. Each factory is typed per-call; the map is keyed by prefixed cache key. */
 	private inflight: Map<string, Promise<unknown>> = new Map();
 
-	/** Get or set — fetch from cache, or compute and store. Single-flight: concurrent misses share one factory call. */
-	async remember<T>(
+	/**
+	 * Fetch from cache, or compute via `factory` and store (AdonisJS
+	 * `cache.getOrSet`). Single-flight: concurrent misses share one factory call.
+	 * (Positional `(key, ttl, factory)` is a deliberate simplification over
+	 * Adonis's object form — echo keeps a leaner cache surface.)
+	 */
+	async getOrSet<T>(
 		key: string,
 		ttl: number,
 		factory: () => Promise<T>,

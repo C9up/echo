@@ -34,7 +34,7 @@ describe("cache > MemoryDriver", () => {
 	it("flush clears everything", async () => {
 		await cache.set("a", 1);
 		await cache.set("b", 2);
-		await cache.flush();
+		await cache.clear();
 		expect(await cache.get("a")).toBeNull();
 		expect(await cache.get("b")).toBeNull();
 	});
@@ -58,8 +58,8 @@ describe("cache > MemoryDriver", () => {
 			calls++;
 			return "computed";
 		};
-		expect(await cache.remember("memo", 60, factory)).toBe("computed");
-		expect(await cache.remember("memo", 60, factory)).toBe("computed");
+		expect(await cache.getOrSet("memo", 60, factory)).toBe("computed");
+		expect(await cache.getOrSet("memo", 60, factory)).toBe("computed");
 		expect(calls).toBe(1);
 	});
 
@@ -71,9 +71,9 @@ describe("cache > MemoryDriver", () => {
 			return calls;
 		};
 		const [a, b, c] = await Promise.all([
-			cache.remember("flight", 60, slow),
-			cache.remember("flight", 60, slow),
-			cache.remember("flight", 60, slow),
+			cache.getOrSet("flight", 60, slow),
+			cache.getOrSet("flight", 60, slow),
+			cache.getOrSet("flight", 60, slow),
 		]);
 		expect(calls).toBe(1);
 		expect(a).toBe(1);

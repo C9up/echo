@@ -158,7 +158,7 @@ describe("echo > CacheManager > remember (single-flight)", () => {
 			const cache = new CacheManager(driver);
 			await cache.set("k", "cached");
 			const factory = vi.fn(async () => "fresh");
-			const value = await cache.remember("k", 60, factory);
+			const value = await cache.getOrSet("k", 60, factory);
 			expect(value).toBe("cached");
 			expect(factory).not.toHaveBeenCalled();
 		} finally {
@@ -175,8 +175,8 @@ describe("echo > CacheManager > remember (single-flight)", () => {
 				calls++;
 				return `computed-${calls}`;
 			};
-			expect(await cache.remember("k", 60, factory)).toBe("computed-1");
-			expect(await cache.remember("k", 60, factory)).toBe("computed-1");
+			expect(await cache.getOrSet("k", 60, factory)).toBe("computed-1");
+			expect(await cache.getOrSet("k", 60, factory)).toBe("computed-1");
 			expect(calls).toBe(1);
 		} finally {
 			driver.destroy();
@@ -197,9 +197,9 @@ describe("echo > CacheManager > remember (single-flight)", () => {
 				return factoryPromise;
 			};
 
-			const a = cache.remember("k", 60, factory);
-			const b = cache.remember("k", 60, factory);
-			const c = cache.remember("k", 60, factory);
+			const a = cache.getOrSet("k", 60, factory);
+			const b = cache.getOrSet("k", 60, factory);
+			const c = cache.getOrSet("k", 60, factory);
 
 			// Yield to allow the inner `await this.get(key)` to resolve so the
 			// second/third callers are guaranteed to see the inflight entry.
@@ -228,11 +228,11 @@ describe("echo > CacheManager > remember (single-flight)", () => {
 				return "recovered";
 			};
 
-			await expect(cache.remember("k", 60, factory)).rejects.toThrow(
+			await expect(cache.getOrSet("k", 60, factory)).rejects.toThrow(
 				"transient",
 			);
 			// Second attempt should re-invoke the factory (slot was cleaned up).
-			expect(await cache.remember("k", 60, factory)).toBe("recovered");
+			expect(await cache.getOrSet("k", 60, factory)).toBe("recovered");
 			expect(attempts).toBe(2);
 		} finally {
 			driver.destroy();
