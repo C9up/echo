@@ -128,7 +128,10 @@ describe("echo > RedisDriver > get/set/has/delete", () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client);
 		await driver.set("user:1", { name: "Alice" });
-		expect(fake.store.get("cache:user:1")).toBe('{"name":"Alice"}');
+		// Stored as a grace-aware envelope { v: value, e: staleUntil } so a stale
+		// value can be served while a background refresh runs.
+		const raw = fake.store.get("cache:user:1");
+		expect(raw && JSON.parse(raw).v).toEqual({ name: "Alice" });
 		expect(await driver.get<{ name: string }>("user:1")).toEqual({
 			name: "Alice",
 		});

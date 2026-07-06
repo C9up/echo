@@ -1,13 +1,18 @@
 /**
- * Redis cache driver — production-grade cache with TTL and tags.
+ * Redis cache driver — production-grade cache with TTL, grace
+ * (stale-while-revalidate) and tags. Suitable as the L2 tier of
+ * {@link TieredDriver}.
  *
  * Requires a Redis client instance implementing the minimal interface below.
  * Compatible with ioredis and redis (node-redis) clients.
  *
- * @implements MISS-10
+ * STORAGE FORMAT (breaking vs echo <=0.1.5): values are stored as a JSON
+ * envelope `{ "v": <value>, "e": <logicalExpiryEpochMs> }`. The physical Redis
+ * TTL (`EX`) covers `ttl + grace` so a logically-expired value survives for the
+ * grace window; `e` records the logical expiry so reads can flag it stale.
  */
 
-import type { CacheDriver } from "../CacheManager.js";
+import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 /** Minimal Redis client interface — compatible with ioredis and node-redis. */
 export interface RedisClient {
@@ -30,7 +35,22 @@ export interface RedisClient {
 	): Promise<[string, string[]]>;
 }
 
-export class RedisDriver implements CacheDriver {
+interface Envelope {
+	v: unknown;
+	e: number;
+}
+
+function isEnvelope(x: unknown): x is Envelope {
+	return (
+		typeof x === "object" &&
+		x !== null &&
+		"v" in x &&
+		"e" in x &&
+		typeof Reflect.get(x, "e") === "number"
+	);
+}
+
+export class RedisDriver implements TaggableDriver {
 	#client: RedisClient;
 	#prefix: string;
 
@@ -44,12 +64,9 @@ export class RedisDriver implements CacheDriver {
 	}
 
 	/**
-	 * Reverse-index for per-key tag membership. Lets `setWithTags()` clean
-	 * stale memberships when a key is retagged, and `delete()` drop the key
-	 * from every tag-set it belongs to. Without this, a re-tag like
-	 * `setWithTags('article:42', v, ['homepage'])` (was `['news']`) leaves
-	 * `tag:news` pointing at `article:42`, and a later `flushTags(['news'])`
-	 * silently deletes the value.
+	 * Reverse-index for per-key tag membership. Lets tag writes clean stale
+	 * memberships on retag, and `delete()` drop the key from every tag-set it
+	 * belongs to.
 	 */
 	#metaKey(k: string): string {
 		return `${this.#prefix}meta:tags:${k}`;
@@ -71,29 +88,81 @@ export class RedisDriver implements CacheDriver {
 	}
 
 	async get<T = unknown>(key: string): Promise<T | null> {
-		const raw = await this.#client.get(this.#key(key));
-		if (raw === null) return null;
-		return JSON.parse(raw) as T;
+		const entry = await this.getEntry<T>(key);
+		if (entry === null || entry.stale) return null;
+		return entry.value;
 	}
 
-	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
-		const fullKey = this.#key(key);
-		// Reconcile tags: overwriting a previously-tagged key with an untagged
-		// value must drop it from its old tag sets + meta index, or a later
-		// flushTags would wrongly purge this fresh value (set() never touched the
-		// tag/meta keys, unlike delete()).
-		const metaKey = this.#metaKey(key);
+	async getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null> {
+		const raw = await this.#client.get(this.#key(key));
+		if (raw === null) return null;
+		const parsed: unknown = JSON.parse(raw);
+		if (!isEnvelope(parsed)) return null;
+		const stale = parsed.e > 0 && parsed.e < Date.now();
+		// Deserialize boundary: the on-the-wire value is genuinely `unknown`; the
+		// caller's generic `T` is the assertion. This is the single unavoidable
+		// cast site (mirrors echo <=0.1.5 `JSON.parse(raw) as T`).
+		const value = parsed.v as T;
+		return { value, stale };
+	}
+
+	/** Write the value envelope with a physical (grace-inclusive) TTL in seconds. */
+	async #writeEnvelope(
+		fullKey: string,
+		value: unknown,
+		logicalTtlSeconds: number,
+		physicalTtlSeconds: number,
+	): Promise<void> {
+		const expiresAt =
+			logicalTtlSeconds > 0 ? Date.now() + logicalTtlSeconds * 1000 : 0;
+		const envelope: Envelope = { v: value, e: expiresAt };
+		const serialized = JSON.stringify(envelope);
+		if (physicalTtlSeconds > 0) {
+			await this.#client.set(fullKey, serialized, "EX", physicalTtlSeconds);
+		} else {
+			await this.#client.set(fullKey, serialized);
+		}
+	}
+
+	/** Drop a key from its previous tag memberships (reconcile before re-tagging). */
+	async #dropTags(fullKey: string, metaKey: string): Promise<string[]> {
 		const prevTags = await this.#client.smembers(metaKey);
 		for (const tag of prevTags) {
 			await this.#client.srem(`${this.#prefix}tag:${tag}`, fullKey);
 		}
 		if (prevTags.length > 0) await this.#client.del(metaKey);
-		const serialized = JSON.stringify(value);
-		if (ttlSeconds && ttlSeconds > 0) {
-			await this.#client.set(fullKey, serialized, "EX", ttlSeconds);
-		} else {
-			await this.#client.set(fullKey, serialized);
+		return prevTags;
+	}
+
+	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
+		const fullKey = this.#key(key);
+		await this.#dropTags(fullKey, this.#metaKey(key));
+		const ttl = ttlSeconds && ttlSeconds > 0 ? ttlSeconds : 0;
+		await this.#writeEnvelope(fullKey, value, ttl, ttl);
+	}
+
+	async setEntry(
+		key: string,
+		value: unknown,
+		options: DriverSetOptions,
+	): Promise<void> {
+		const fullKey = this.#key(key);
+		const metaKey = this.#metaKey(key);
+		const ttl =
+			options.ttlSeconds && options.ttlSeconds > 0 ? options.ttlSeconds : 0;
+		const grace =
+			options.graceSeconds && options.graceSeconds > 0
+				? options.graceSeconds
+				: 0;
+		const physical = ttl > 0 ? ttl + grace : 0;
+		const tags = options.tags ?? [];
+		if (tags.length === 0) {
+			await this.#dropTags(fullKey, metaKey);
+			await this.#writeEnvelope(fullKey, value, ttl, physical);
+			return;
 		}
+		await this.#writeEnvelope(fullKey, value, ttl, physical);
+		await this.#applyTags(key, tags, physical);
 	}
 
 	async flush(): Promise<void> {
@@ -121,25 +190,18 @@ export class RedisDriver implements CacheDriver {
 	}
 
 	async has(key: string): Promise<boolean> {
-		const exists = await this.#client.exists(this.#key(key));
-		return exists > 0;
+		return (await this.get(key)) !== null;
 	}
 
 	/**
-	 * Set a value with tag memberships for group invalidation.
-	 *
-	 * Re-tagging an existing key (e.g. `['news']` → `['homepage']`) cleans
-	 * the stale memberships via the per-key reverse-index — without this,
-	 * a later `flushTags(['news'])` would silently wipe the still-current
-	 * value because the abandoned `tag:news` set kept pointing at it.
+	 * Reconcile the tag reverse-index for `key` to exactly `tags`, and extend
+	 * tag-set / meta TTLs to the physical (grace-inclusive) retention.
 	 */
-	async setWithTags(
+	async #applyTags(
 		key: string,
-		value: unknown,
 		tags: string[],
-		ttlSeconds?: number,
+		physicalTtlSeconds: number,
 	): Promise<void> {
-		await this.set(key, value, ttlSeconds);
 		const fullKey = this.#key(key);
 		const metaKey = this.#metaKey(key);
 		const oldTags = await this.#client.smembers(metaKey);
@@ -148,57 +210,56 @@ export class RedisDriver implements CacheDriver {
 		const removedTags = oldTags.filter((t) => !newTagSet.has(t));
 		const addedTags = tags.filter((t) => !oldTagSet.has(t));
 
-		// Drop the key from tag-sets it no longer belongs to.
 		for (const tag of removedTags) {
-			const tagKey = `${this.#prefix}tag:${tag}`;
-			await this.#client.srem(tagKey, fullKey);
+			await this.#client.srem(`${this.#prefix}tag:${tag}`, fullKey);
 		}
 
-		// Add to new tag-sets; re-touch TTLs on every declared tag so existing
-		// memberships extend correctly on re-set.
 		for (const tag of tags) {
 			const tagKey = `${this.#prefix}tag:${tag}`;
 			if (addedTags.includes(tag)) {
 				await this.#client.sadd(tagKey, fullKey);
 			}
-			if (ttlSeconds && ttlSeconds > 0) {
+			if (physicalTtlSeconds > 0) {
 				const currentTtl = await this.#client.ttl(tagKey);
-				if (currentTtl < 0 || ttlSeconds > currentTtl) {
-					await this.#client.expire(tagKey, ttlSeconds);
+				if (currentTtl < 0 || physicalTtlSeconds > currentTtl) {
+					await this.#client.expire(tagKey, physicalTtlSeconds);
 				}
 			}
 		}
 
-		// Refresh the reverse-index to match the new tag set. Drop+re-add is
-		// simpler than diff-mutating the set and matches `tags` exactly even
-		// in the empty-array case.
 		if (oldTags.length > 0) {
 			await this.#client.del(metaKey);
 		}
 		if (tags.length > 0) {
 			await this.#client.sadd(metaKey, ...tags);
-			if (ttlSeconds && ttlSeconds > 0) {
-				await this.#client.expire(metaKey, ttlSeconds);
+			if (physicalTtlSeconds > 0) {
+				await this.#client.expire(metaKey, physicalTtlSeconds);
 			}
 		}
 	}
 
+	/** Set a value with tag memberships for group invalidation (no grace). */
+	async setWithTags(
+		key: string,
+		value: unknown,
+		tags: string[],
+		ttlSeconds?: number,
+	): Promise<void> {
+		const ttl = ttlSeconds && ttlSeconds > 0 ? ttlSeconds : 0;
+		await this.#writeEnvelope(this.#key(key), value, ttl, ttl);
+		await this.#applyTags(key, tags, ttl);
+	}
+
 	/**
-	 * Flush all entries tagged with any of the given tags. Cleans up the
-	 * per-key reverse-index AND cross-tag memberships so a multi-tag key
-	 * (e.g. `['news', 'homepage']`) flushed via `news` is also removed from
-	 * the `homepage` tag-set — otherwise the `homepage` set ends up with a
-	 * dangling reference to a now-deleted value.
+	 * Invalidate all entries tagged with any of the given tags. Cleans the
+	 * per-key reverse-index AND cross-tag memberships so a multi-tag key flushed
+	 * via one tag is also removed from the others.
 	 */
-	async flushTags(tags: string[]): Promise<void> {
+	async deleteByTag(tags: string[]): Promise<void> {
 		for (const tag of tags) {
 			const tagKey = `${this.#prefix}tag:${tag}`;
 			const members = await this.#client.smembers(tagKey);
 			for (const fullKey of members) {
-				// Read every OTHER tag this key claims (via the reverse-index)
-				// and SREM the key from each. The reverse-index key derives
-				// from the unprefixed user key — recover it by stripping the
-				// prefix.
 				const userKey = fullKey.startsWith(this.#prefix)
 					? fullKey.slice(this.#prefix.length)
 					: fullKey;
@@ -218,5 +279,10 @@ export class RedisDriver implements CacheDriver {
 			}
 			await this.#client.del(tagKey);
 		}
+	}
+
+	/** @deprecated alias of {@link deleteByTag}. */
+	async flushTags(tags: string[]): Promise<void> {
+		return this.deleteByTag(tags);
 	}
 }
