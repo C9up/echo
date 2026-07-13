@@ -130,4 +130,40 @@ describe("echo failure paths > TieredDriver L1/L2", () => {
 		});
 		expect(await tiered.get("absent")).toBeNull();
 	});
+
+	it("preserves the L2 TTL on promotion — no immortal L1 copy", async () => {
+		vi.useFakeTimers();
+		try {
+			const l1 = new MemoryDriver();
+			const l2 = new MemoryDriver();
+			await l2.set("k", "v", 0.05); // 50ms TTL
+			const tiered = new TieredDriver({ l1, l2 });
+			expect(await tiered.get("k")).toBe("v"); // promotes into L1
+
+			// L1 must carry a finite expiry — before the fix it was 0 (immortal).
+			const promoted = await l1.getEntry("k");
+			expect(promoted?.expiresAt).toBeGreaterThan(0);
+
+			// Past the TTL, neither tier serves it (before: L1 served it forever).
+			await vi.advanceTimersByTimeAsync(60);
+			expect(await tiered.get("k")).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+});
+
+describe("echo failure paths > expire() immediate staleness", () => {
+	it("marks the key stale at once (no brief fresh window)", async () => {
+		const driver = new MemoryDriver();
+		const cache = new CacheManager(driver, { grace: 60 });
+		await cache.set({ key: "k", value: "old", ttl: 60 });
+		expect(await cache.expire("k")).toBe(true);
+		// Retained under grace, but a fresh read is a miss IMMEDIATELY — before the
+		// fix the ttl:0.001 rewrite kept it fresh for ~1ms (getOrSet served "old"
+		// and never ran the factory).
+		const entry = await driver.getEntry("k");
+		expect(entry?.stale).toBe(true);
+		expect(await driver.get("k")).toBeNull();
+	});
 });

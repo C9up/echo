@@ -93,8 +93,24 @@ export class TieredDriver implements TaggableDriver {
 
 		const l2 = await readEntry<T>(this.#l2, key);
 		if (l2 && !l2.stale) {
-			// Promote fresh L2 hit into L1.
-			await writeEntry(this.#l1, key, l2.value, {});
+			// Promote a fresh L2 hit into L1 — preserving the remaining logical TTL
+			// so L1 cannot outlive L2 (a promotion with no TTL left an immortal L1
+			// entry that kept serving a value the L2 had already expired).
+			if (l2.expiresAt === undefined) {
+				// Driver doesn't expose expiry — promoting with no TTL risks an
+				// immortal L1 copy; skip promotion rather than cache it forever.
+				return l2;
+			}
+			const opts: DriverSetOptions = {};
+			if (l2.expiresAt > 0) {
+				const remainingSeconds = (l2.expiresAt - Date.now()) / 1000;
+				// Raced past expiry between the stale check and now — don't promote
+				// a value that is already dead.
+				if (remainingSeconds <= 0) return l2;
+				opts.ttlSeconds = remainingSeconds;
+			}
+			// expiresAt === 0 → the L2 entry genuinely never expires → promote as-is.
+			await writeEntry(this.#l1, key, l2.value, opts);
 			return l2;
 		}
 		if (l2) return l2; // stale L2 (grace)

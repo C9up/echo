@@ -330,11 +330,12 @@ export class CacheManager {
 		const entry = await this.#readEntry<unknown>(prefixed);
 		if (entry === null) return false;
 		if (graceSeconds > 0 && this.#driver.setEntry) {
-			// Re-write with an already-elapsed logical TTL (ttl 0 handled as never;
-			// use a 1ms-past marker via graceSeconds-only retention). Simplest
-			// faithful behaviour: keep value, drop logical freshness.
+			// Mark the entry stale RIGHT NOW (logical expiry one ms in the past) while
+			// keeping it physically for the grace window. A positive `ttlSeconds`
+			// would leave a brief fresh window during which the value is still served
+			// and the factory never runs.
 			await this.#driver.setEntry(prefixed, entry.value, {
-				ttlSeconds: 0.001,
+				expiresAt: Date.now() - 1,
 				graceSeconds,
 			});
 			return true;

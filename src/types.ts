@@ -13,6 +13,13 @@ import type { FactoryError } from "./errors.js";
 export interface CacheEntry<T = unknown> {
 	value: T;
 	stale: boolean;
+	/**
+	 * Logical expiry as an epoch-ms timestamp; `0` means "never expires".
+	 * `undefined` means the driver does not track expiry. Lets a composing
+	 * driver (e.g. {@link TieredDriver}) preserve the remaining TTL when it
+	 * promotes an entry between tiers instead of resetting it to immortal.
+	 */
+	expiresAt?: number;
 }
 
 /** Options for the grace-aware {@link CacheDriver.setEntry}. */
@@ -23,6 +30,14 @@ export interface DriverSetOptions {
 	graceSeconds?: number;
 	/** Tags for grouped invalidation (only honoured by taggable drivers). */
 	tags?: string[];
+	/**
+	 * Absolute logical expiry as an epoch-ms timestamp. When set it OVERRIDES
+	 * `ttlSeconds` for the logical-freshness boundary (a past value makes the
+	 * entry immediately stale), while `graceSeconds` still governs physical
+	 * retention from now. Used by {@link CacheManager.expire} to mark a key stale
+	 * at once without deleting it.
+	 */
+	expiresAt?: number;
 }
 
 /**

@@ -61,7 +61,7 @@ export class MemoryDriver implements TaggableDriver {
 			return null;
 		}
 		const stale = entry.expiresAt > 0 && entry.expiresAt < now;
-		return { value: entry.value as T, stale };
+		return { value: entry.value as T, stale, expiresAt: entry.expiresAt };
 	}
 
 	/**
@@ -81,6 +81,7 @@ export class MemoryDriver implements TaggableDriver {
 		ttlSeconds: number | undefined,
 		graceSeconds: number,
 		tags: string[],
+		expiresAtOverride?: number,
 	): void {
 		if (value === null || value === undefined) {
 			throw new TypeError(
@@ -89,12 +90,19 @@ export class MemoryDriver implements TaggableDriver {
 		}
 		const now = Date.now();
 		const hasTtl = ttlSeconds != null && ttlSeconds > 0;
-		const expiresAt = hasTtl ? now + ttlSeconds * 1000 : 0;
-		// A never-expiring entry never goes stale either; otherwise the grace
-		// window extends physical retention past the logical expiry.
-		const staleUntil = hasTtl
-			? expiresAt + (graceSeconds > 0 ? graceSeconds * 1000 : 0)
-			: 0;
+		// An absolute `expiresAtOverride` (e.g. `expire()` marking stale-now) wins
+		// over the ttl-derived expiry; a past value makes the entry immediately stale.
+		const expiresAt =
+			expiresAtOverride !== undefined
+				? expiresAtOverride
+				: hasTtl
+					? now + ttlSeconds * 1000
+					: 0;
+		const graceMs = graceSeconds > 0 ? graceSeconds * 1000 : 0;
+		// A never-expiring entry never goes stale either; otherwise grace extends
+		// physical retention past the logical expiry. Measure grace from the LATER
+		// of the expiry and now, so an already-past expiry still survives its grace.
+		const staleUntil = expiresAt > 0 ? Math.max(expiresAt, now) + graceMs : 0;
 		// Reconcile the tag index: overwriting a previously-tagged key must drop
 		// its old tag-index refs, or a later deleteByTag could purge this fresh
 		// value (audit 2026-05-22 F3).
@@ -128,6 +136,7 @@ export class MemoryDriver implements TaggableDriver {
 			options.ttlSeconds,
 			options.graceSeconds ?? 0,
 			options.tags ?? [],
+			options.expiresAt,
 		);
 	}
 

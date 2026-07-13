@@ -103,7 +103,7 @@ export class RedisDriver implements TaggableDriver {
 		// caller's generic `T` is the assertion. This is the single unavoidable
 		// cast site (mirrors echo <=0.1.5 `JSON.parse(raw) as T`).
 		const value = parsed.v as T;
-		return { value, stale };
+		return { value, stale, expiresAt: parsed.e };
 	}
 
 	/** Write the value envelope with a physical (grace-inclusive) TTL in seconds. */
@@ -112,9 +112,16 @@ export class RedisDriver implements TaggableDriver {
 		value: unknown,
 		logicalTtlSeconds: number,
 		physicalTtlSeconds: number,
+		logicalExpiresAtOverride?: number,
 	): Promise<void> {
+		// An absolute override (e.g. `expire()` marking stale-now) wins over the
+		// ttl-derived logical expiry; a past value flags the entry stale on read.
 		const expiresAt =
-			logicalTtlSeconds > 0 ? Date.now() + logicalTtlSeconds * 1000 : 0;
+			logicalExpiresAtOverride !== undefined
+				? logicalExpiresAtOverride
+				: logicalTtlSeconds > 0
+					? Date.now() + logicalTtlSeconds * 1000
+					: 0;
 		const envelope: Envelope = { v: value, e: expiresAt };
 		const serialized = JSON.stringify(envelope);
 		if (physicalTtlSeconds > 0) {
@@ -154,14 +161,18 @@ export class RedisDriver implements TaggableDriver {
 			options.graceSeconds && options.graceSeconds > 0
 				? options.graceSeconds
 				: 0;
-		const physical = ttl > 0 ? ttl + grace : 0;
+		// With an absolute logical expiry (e.g. `expire()` marking stale-now), the
+		// ttl no longer drives physical retention — keep the value for the grace
+		// window measured from now so a stale-but-graced read still finds it.
+		const override = options.expiresAt;
+		const physical = override !== undefined ? grace : ttl > 0 ? ttl + grace : 0;
 		const tags = options.tags ?? [];
 		if (tags.length === 0) {
 			await this.#dropTags(fullKey, metaKey);
-			await this.#writeEnvelope(fullKey, value, ttl, physical);
+			await this.#writeEnvelope(fullKey, value, ttl, physical, override);
 			return;
 		}
-		await this.#writeEnvelope(fullKey, value, ttl, physical);
+		await this.#writeEnvelope(fullKey, value, ttl, physical, override);
 		await this.#applyTags(key, tags, physical);
 	}
 
