@@ -11,7 +11,7 @@ import type { CacheEmitter } from "./types.js";
  */
 interface EchoContainer {
 	singleton(token: unknown, factory: () => unknown): void;
-	resolve<T = unknown>(token: unknown): T;
+	resolve<T = unknown>(token: unknown): Promise<T>;
 }
 interface EchoConfigStore {
 	get<T = unknown>(key: string): T | undefined;
@@ -73,9 +73,9 @@ function isMultiStoreConfig(value: unknown): value is MultiStoreConfig {
 export default class EchoProvider {
 	constructor(protected app: EchoAppContext) {}
 
-	#resolveEmitter(): CacheEmitter | undefined {
+	async #resolveEmitter(): Promise<CacheEmitter | undefined> {
 		try {
-			const candidate = this.app.container.resolve<unknown>("emitter");
+			const candidate = await this.app.container.resolve<unknown>("emitter");
 			if (isEmitter(candidate)) return candidate;
 		} catch {
 			// No emitter bound — events are simply not emitted.
@@ -84,8 +84,8 @@ export default class EchoProvider {
 	}
 
 	register(): void {
-		this.app.container.singleton(CacheManager, () => {
-			const emitter = this.#resolveEmitter();
+		this.app.container.singleton(CacheManager, async () => {
+			const emitter = await this.#resolveEmitter();
 			const raw = this.app.config.get<unknown>("cache");
 
 			if (isMultiStoreConfig(raw)) {
@@ -110,7 +110,7 @@ export default class EchoProvider {
 	}
 
 	async boot(): Promise<void> {
-		setCache(this.app.container.resolve<CacheManager>(CacheManager));
+		setCache(await this.app.container.resolve<CacheManager>(CacheManager));
 	}
 
 	async shutdown(): Promise<void> {}
