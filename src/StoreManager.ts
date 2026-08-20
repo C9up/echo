@@ -18,9 +18,9 @@
 import { CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
 import { type RedisClient, RedisDriver } from "./drivers/RedisDriver.js";
-import { quasarConnection } from "./quasar.js";
 import { type CacheBus, TieredDriver } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
+import { quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter } from "./types.js";
 
 /** A lazily-instantiated driver (built once per store, on first `use`). */
@@ -56,12 +56,15 @@ export const drivers = {
 	 * memory-only app never pays for it.
 	 */
 	redis(
-		options: { client: RedisClient; prefix?: string } | { connection?: string; prefix?: string },
+		options:
+			| { client: RedisClient; prefix?: string }
+			| { connection?: string; prefix?: string },
 	): DriverFactory {
 		if ("client" in options) {
 			return () => new RedisDriver(options.client, options.prefix);
 		}
-		return () => new RedisDriver(quasarConnection(options.connection), options.prefix);
+		return () =>
+			new RedisDriver(quasarConnection(options.connection), options.prefix);
 	},
 	tiered(options: {
 		l1: DriverFactory;

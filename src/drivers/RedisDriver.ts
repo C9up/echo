@@ -56,7 +56,9 @@ function isEnvelope(x: unknown): x is Envelope {
  * a client: the store is built synchronously, but the first command that needs
  * the client is not.
  */
-export type RedisClientSource = RedisClient | (() => RedisClient | Promise<RedisClient>);
+export type RedisClientSource =
+	| RedisClient
+	| (() => RedisClient | Promise<RedisClient>);
 
 export class RedisDriver implements TaggableDriver {
 	#source: RedisClientSource;

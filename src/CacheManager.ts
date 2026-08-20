@@ -212,7 +212,7 @@ export class CacheManager {
 			});
 			return entry.value;
 		}
-		if (entry && entry.stale && graceSeconds > 0) {
+		if (entry?.stale && graceSeconds > 0) {
 			this.#emit("cache:hit", {
 				key,
 				value: entry.value,
@@ -513,7 +513,7 @@ export class CacheManager {
 			return entry.value;
 		}
 
-		const hasStale = entry !== null && entry.stale && o.graceSeconds > 0;
+		const hasStale = entry?.stale === true && o.graceSeconds > 0;
 		const staleValue = hasStale ? entry.value : undefined;
 
 		let record = this.#shared.inflight.get(prefixed);

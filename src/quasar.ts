@@ -29,8 +29,21 @@ function isRedisClient(value: unknown): value is RedisClient {
 	if (typeof value !== "object" || value === null) return false;
 	// The commands this driver actually issues. A connection missing one of
 	// them would fail on the first cache write, far from the cause.
-	const required = ["get", "set", "del", "exists", "keys", "sadd", "srem", "smembers", "expire", "ttl"];
-	return required.every((name) => typeof Reflect.get(value, name) === "function");
+	const required = [
+		"get",
+		"set",
+		"del",
+		"exists",
+		"keys",
+		"sadd",
+		"srem",
+		"smembers",
+		"expire",
+		"ttl",
+	];
+	return required.every(
+		(name) => typeof Reflect.get(value, name) === "function",
+	);
 }
 
 /**
@@ -55,7 +68,9 @@ export function quasarConnection(name?: string): () => Promise<RedisClient> {
 			? loaded
 			: Reflect.get(Object(loaded), "default");
 		if (!isConnectionSource(manager)) {
-			throw new Error("Echo: @c9up/quasar/services/main did not expose a connection() manager");
+			throw new Error(
+				"Echo: @c9up/quasar/services/main did not expose a connection() manager",
+			);
 		}
 
 		const connection = manager.connection(name);
