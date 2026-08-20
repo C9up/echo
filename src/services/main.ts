@@ -33,8 +33,8 @@ const cache: CacheManager = new Proxy({} as CacheManager, {
 		// `import { setX } from ".../services/main"` into a crash at import time,
 		// far from any real use. They are not members of what this stands in for,
 		// so answer undefined and let a genuine access be the one that reports.
-		if (typeof prop === 'symbol' || prop === 'then') {
-			return undefined
+		if (typeof prop === "symbol" || prop === "then") {
+			return undefined;
 		}
 		if (!instance) {
 			throw new Error(
