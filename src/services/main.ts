@@ -27,6 +27,15 @@ export function getCache(): CacheManager | undefined {
 
 const cache: CacheManager = new Proxy({} as CacheManager, {
 	get(_target, prop) {
+		// A module loader inspects what it imports before anyone uses it: it reads
+		// `then` to decide whether the namespace is thenable, and various symbols
+		// for interop and formatting. Throwing on those turns a plain
+		// `import { setX } from ".../services/main"` into a crash at import time,
+		// far from any real use. They are not members of what this stands in for,
+		// so answer undefined and let a genuine access be the one that reports.
+		if (typeof prop === 'symbol' || prop === 'then') {
+			return undefined
+		}
 		if (!instance) {
 			throw new Error(
 				"[echo] CacheManager singleton accessed before EchoProvider.boot() ran " +
