@@ -18,6 +18,7 @@
 import { CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
 import { type RedisClient, RedisDriver } from "./drivers/RedisDriver.js";
+import { quasarConnection } from "./quasar.js";
 import { type CacheBus, TieredDriver } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
 import type { CacheDriver, CacheEmitter } from "./types.js";
@@ -48,8 +49,19 @@ export const drivers = {
 	memory(options?: { sweepIntervalMs?: number }): DriverFactory {
 		return () => new MemoryDriver(options?.sweepIntervalMs);
 	},
-	redis(options: { client: RedisClient; prefix?: string }): DriverFactory {
-		return () => new RedisDriver(options.client, options.prefix);
+	/**
+	 * Either hand it a client, or name a quasar connection — the AdonisJS shape,
+	 * where a store says `connection: "cache"` and the Redis module owns the
+	 * socket. Naming a connection loads @c9up/quasar on the first command, so a
+	 * memory-only app never pays for it.
+	 */
+	redis(
+		options: { client: RedisClient; prefix?: string } | { connection?: string; prefix?: string },
+	): DriverFactory {
+		if ("client" in options) {
+			return () => new RedisDriver(options.client, options.prefix);
+		}
+		return () => new RedisDriver(quasarConnection(options.connection), options.prefix);
 	},
 	tiered(options: {
 		l1: DriverFactory;

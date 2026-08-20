@@ -50,13 +50,44 @@ function isEnvelope(x: unknown): x is Envelope {
 	);
 }
 
+/**
+ * Where the client comes from. A resolver is what lets a store name its
+ * connection (`drivers.redis({ connection: "cache" })`) instead of being handed
+ * a client: the store is built synchronously, but the first command that needs
+ * the client is not.
+ */
+export type RedisClientSource = RedisClient | (() => RedisClient | Promise<RedisClient>);
+
 export class RedisDriver implements TaggableDriver {
-	#client: RedisClient;
+	#source: RedisClientSource;
+	#resolved: RedisClient | undefined;
+	#pending: Promise<RedisClient> | undefined;
 	#prefix: string;
 
-	constructor(client: RedisClient, prefix = "cache:") {
-		this.#client = client;
+	constructor(source: RedisClientSource, prefix = "cache:") {
+		this.#source = source;
 		this.#prefix = prefix;
+	}
+
+	/**
+	 * The client, resolved once. Two commands racing on a cold store must not
+	 * each open their own connection, so the in-flight promise is shared.
+	 */
+	async #client(): Promise<RedisClient> {
+		if (this.#resolved) return this.#resolved;
+		if (typeof this.#source !== "function") {
+			this.#resolved = this.#source;
+			return this.#resolved;
+		}
+		if (!this.#pending) {
+			const resolver = this.#source;
+			this.#pending = Promise.resolve(resolver()).then((client) => {
+				this.#resolved = client;
+				this.#pending = undefined;
+				return client;
+			});
+		}
+		return this.#pending;
 	}
 
 	#key(k: string): string {
@@ -73,17 +104,18 @@ export class RedisDriver implements TaggableDriver {
 	}
 
 	async delete(key: string): Promise<boolean> {
+		const client = await this.#client();
 		const fullKey = this.#key(key);
 		const metaKey = this.#metaKey(key);
-		const tags = await this.#client.smembers(metaKey);
+		const tags = await client.smembers(metaKey);
 		for (const tag of tags) {
 			const tagKey = `${this.#prefix}tag:${tag}`;
-			await this.#client.srem(tagKey, fullKey);
+			await client.srem(tagKey, fullKey);
 		}
 		if (tags.length > 0) {
-			await this.#client.del(metaKey);
+			await client.del(metaKey);
 		}
-		const count = await this.#client.del(fullKey);
+		const count = await client.del(fullKey);
 		return count > 0;
 	}
 
@@ -94,7 +126,8 @@ export class RedisDriver implements TaggableDriver {
 	}
 
 	async getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null> {
-		const raw = await this.#client.get(this.#key(key));
+		const client = await this.#client();
+		const raw = await client.get(this.#key(key));
 		if (raw === null) return null;
 		const parsed: unknown = JSON.parse(raw);
 		if (!isEnvelope(parsed)) return null;
@@ -114,6 +147,7 @@ export class RedisDriver implements TaggableDriver {
 		physicalTtlSeconds: number,
 		logicalExpiresAtOverride?: number,
 	): Promise<void> {
+		const client = await this.#client();
 		// An absolute override (e.g. `expire()` marking stale-now) wins over the
 		// ttl-derived logical expiry; a past value flags the entry stale on read.
 		const expiresAt =
@@ -125,19 +159,20 @@ export class RedisDriver implements TaggableDriver {
 		const envelope: Envelope = { v: value, e: expiresAt };
 		const serialized = JSON.stringify(envelope);
 		if (physicalTtlSeconds > 0) {
-			await this.#client.set(fullKey, serialized, "EX", physicalTtlSeconds);
+			await client.set(fullKey, serialized, "EX", physicalTtlSeconds);
 		} else {
-			await this.#client.set(fullKey, serialized);
+			await client.set(fullKey, serialized);
 		}
 	}
 
 	/** Drop a key from its previous tag memberships (reconcile before re-tagging). */
 	async #dropTags(fullKey: string, metaKey: string): Promise<string[]> {
-		const prevTags = await this.#client.smembers(metaKey);
+		const client = await this.#client();
+		const prevTags = await client.smembers(metaKey);
 		for (const tag of prevTags) {
-			await this.#client.srem(`${this.#prefix}tag:${tag}`, fullKey);
+			await client.srem(`${this.#prefix}tag:${tag}`, fullKey);
 		}
-		if (prevTags.length > 0) await this.#client.del(metaKey);
+		if (prevTags.length > 0) await client.del(metaKey);
 		return prevTags;
 	}
 
@@ -177,7 +212,8 @@ export class RedisDriver implements TaggableDriver {
 	}
 
 	async flush(): Promise<void> {
-		const scan = this.#client.scan;
+		const client = await this.#client();
+		const scan = client.scan;
 		if (typeof scan === "function") {
 			let cursor = "0";
 			do {
@@ -190,7 +226,7 @@ export class RedisDriver implements TaggableDriver {
 				);
 				cursor = nextCursor;
 				if (keys.length > 0) {
-					await this.#client.del(keys);
+					await client.del(keys);
 				}
 			} while (cursor !== "0");
 		} else {
@@ -213,38 +249,39 @@ export class RedisDriver implements TaggableDriver {
 		tags: string[],
 		physicalTtlSeconds: number,
 	): Promise<void> {
+		const client = await this.#client();
 		const fullKey = this.#key(key);
 		const metaKey = this.#metaKey(key);
-		const oldTags = await this.#client.smembers(metaKey);
+		const oldTags = await client.smembers(metaKey);
 		const newTagSet = new Set(tags);
 		const oldTagSet = new Set(oldTags);
 		const removedTags = oldTags.filter((t) => !newTagSet.has(t));
 		const addedTags = tags.filter((t) => !oldTagSet.has(t));
 
 		for (const tag of removedTags) {
-			await this.#client.srem(`${this.#prefix}tag:${tag}`, fullKey);
+			await client.srem(`${this.#prefix}tag:${tag}`, fullKey);
 		}
 
 		for (const tag of tags) {
 			const tagKey = `${this.#prefix}tag:${tag}`;
 			if (addedTags.includes(tag)) {
-				await this.#client.sadd(tagKey, fullKey);
+				await client.sadd(tagKey, fullKey);
 			}
 			if (physicalTtlSeconds > 0) {
-				const currentTtl = await this.#client.ttl(tagKey);
+				const currentTtl = await client.ttl(tagKey);
 				if (currentTtl < 0 || physicalTtlSeconds > currentTtl) {
-					await this.#client.expire(tagKey, physicalTtlSeconds);
+					await client.expire(tagKey, physicalTtlSeconds);
 				}
 			}
 		}
 
 		if (oldTags.length > 0) {
-			await this.#client.del(metaKey);
+			await client.del(metaKey);
 		}
 		if (tags.length > 0) {
-			await this.#client.sadd(metaKey, ...tags);
+			await client.sadd(metaKey, ...tags);
 			if (physicalTtlSeconds > 0) {
-				await this.#client.expire(metaKey, physicalTtlSeconds);
+				await client.expire(metaKey, physicalTtlSeconds);
 			}
 		}
 	}
@@ -267,28 +304,29 @@ export class RedisDriver implements TaggableDriver {
 	 * via one tag is also removed from the others.
 	 */
 	async deleteByTag(tags: string[]): Promise<void> {
+		const client = await this.#client();
 		for (const tag of tags) {
 			const tagKey = `${this.#prefix}tag:${tag}`;
-			const members = await this.#client.smembers(tagKey);
+			const members = await client.smembers(tagKey);
 			for (const fullKey of members) {
 				const userKey = fullKey.startsWith(this.#prefix)
 					? fullKey.slice(this.#prefix.length)
 					: fullKey;
 				const metaKey = this.#metaKey(userKey);
-				const allTags = await this.#client.smembers(metaKey);
+				const allTags = await client.smembers(metaKey);
 				for (const otherTag of allTags) {
 					if (otherTag === tag) continue;
 					const otherTagKey = `${this.#prefix}tag:${otherTag}`;
-					await this.#client.srem(otherTagKey, fullKey);
+					await client.srem(otherTagKey, fullKey);
 				}
 				if (allTags.length > 0) {
-					await this.#client.del(metaKey);
+					await client.del(metaKey);
 				}
 			}
 			if (members.length > 0) {
-				await this.#client.del(members);
+				await client.del(members);
 			}
-			await this.#client.del(tagKey);
+			await client.del(tagKey);
 		}
 	}
 
