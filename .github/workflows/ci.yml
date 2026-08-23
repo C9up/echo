@@ -25,6 +25,20 @@ jobs:
   build-and-test:
     name: Build & test
     runs-on: ubuntu-latest
+    # A real Redis, so the integration suite for the cache driver actually RUNS here
+    # instead of skipping. Without it those tests only ever execute on a
+    # developer's machine, which is where the atomicity they check would fail.
+    services:
+      redis:
+        image: redis:7
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      REDIS_TEST_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v6
       - uses: pnpm/action-setup@v6

@@ -1,7 +1,7 @@
 {
   "name": "@c9up/echo",
   "version": "0.1.9",
-  "description": "Cache — pluggable cache contract with memory + Redis drivers for the Ream framework",
+  "description": "Cache \u2014 pluggable cache contract with memory + Redis drivers for the Ream framework",
   "license": "MIT",
   "type": "module",
   "main": "./src/index.ts",
@@ -37,6 +37,7 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.10",
+    "@c9up/quasar": "^0.1.0",
     "@types/node": "^22.19.15",
     "typescript": "^6.0.2",
     "vitest": "^4.1.2"

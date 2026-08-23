@@ -27,14 +27,19 @@ function isConnectionSource(value: unknown): value is ConnectionSource {
 
 function isRedisClient(value: unknown): value is RedisClient {
 	if (typeof value !== "object" || value === null) return false;
-	// The commands this driver actually issues. A connection missing one of
-	// them would fail on the first cache write, far from the cause.
+	// The commands this driver actually issues. A connection missing one would
+	// fail on the first cache write, far from the cause.
+	//
+	// `keys` and `exists` are deliberately NOT required: `RedisClient` declares
+	// them, but nothing here calls them — `flush()` walks a SCAN cursor because
+	// it considers KEYS unsafe in production. Demanding `keys` would reject a
+	// client that omits it on exactly the grounds this driver agrees with.
+	// `scan` is optional on the interface, and `flush()` reports its absence
+	// with a precise message of its own.
 	const required = [
 		"get",
 		"set",
 		"del",
-		"exists",
-		"keys",
 		"sadd",
 		"srem",
 		"smembers",
