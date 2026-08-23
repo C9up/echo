@@ -120,6 +120,19 @@ export class CacheManager {
 	#defaultLockTimeout: Duration | undefined;
 	#name: string;
 	#emitter: CacheEmitter | undefined;
+	// One set per event, each typed to ITS payload — a single flat set would
+	// need a cast at every call, which is the lie to avoid here. Listed rather
+	// than built, so adding an event to CacheEventMap fails the typecheck until
+	// it is wired here too.
+	readonly #listeners: {
+		[E in keyof CacheEventMap]: Set<(payload: CacheEventMap[E]) => void>;
+	} = {
+		"cache:hit": new Set(),
+		"cache:miss": new Set(),
+		"cache:written": new Set(),
+		"cache:deleted": new Set(),
+		"cache:cleared": new Set(),
+	};
 	#shared: SharedState;
 
 	constructor(driver: CacheDriver, config?: CacheConfig, shared?: SharedState) {
@@ -144,6 +157,77 @@ export class CacheManager {
 		payload: CacheEventMap[E],
 	): void {
 		this.#emitter?.emit(event, payload);
+		for (const listener of this.#listeners[event]) {
+			try {
+				listener(payload);
+			} catch {
+				// A metrics listener that throws must not fail the cache call it
+				// was observing — the read already succeeded.
+			}
+		}
+	}
+
+	/**
+	 * Listen for a cache event (bentocache `on`).
+	 *
+	 *   cache.on('cache:miss', ({ key }) => metrics.increment('cache.miss', { key }))
+	 *
+	 * Listeners are additive to any injected emitter, and one that throws is
+	 * swallowed: it observes the operation, it does not get to fail it.
+	 */
+	on<E extends keyof CacheEventMap>(
+		event: E,
+		listener: (payload: CacheEventMap[E]) => void,
+	): this {
+		this.#listeners[event].add(listener);
+		return this;
+	}
+
+	/** Listen for the next occurrence only (bentocache `once`). */
+	once<E extends keyof CacheEventMap>(
+		event: E,
+		listener: (payload: CacheEventMap[E]) => void,
+	): this {
+		const wrapper = (payload: CacheEventMap[E]): void => {
+			this.off(event, wrapper);
+			listener(payload);
+		};
+		return this.on(event, wrapper);
+	}
+
+	/** Stop listening (bentocache `off`). Omitting `listener` drops them all. */
+	off<E extends keyof CacheEventMap>(
+		event: E,
+		listener?: (payload: CacheEventMap[E]) => void,
+	): this {
+		if (listener === undefined) {
+			this.#listeners[event].clear();
+			return this;
+		}
+		this.#listeners[event].delete(listener);
+		return this;
+	}
+
+	/**
+	 * Drop entries the driver knows to be expired (bentocache `prune`).
+	 *
+	 * Only meaningful where expiry is not enforced by the store itself — a file
+	 * or SQL driver accumulates dead rows, whereas Redis evicts on its own.
+	 * A driver without the hook reports nothing pruned rather than failing.
+	 */
+	async prune(): Promise<void> {
+		await this.#driver.prune?.();
+	}
+
+	/**
+	 * Release whatever the driver holds open (bentocache `disconnect`).
+	 *
+	 * A driver built on an INJECTED client does not close it: echo did not open
+	 * the connection and other consumers may still be using it. Only a driver
+	 * that owns its resource implements the hook.
+	 */
+	async disconnect(): Promise<void> {
+		await this.#driver.disconnect?.();
 	}
 
 	async #readEntry<T>(prefixed: string): Promise<CacheEntry<T> | null> {

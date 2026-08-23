@@ -63,6 +63,17 @@ export interface CacheDriver {
 		value: unknown,
 		options: DriverSetOptions,
 	): Promise<void>;
+	/**
+	 * Drop entries this driver knows to be expired (bentocache `prune`). Only
+	 * stores that do not evict on their own need it.
+	 */
+	prune?(): Promise<void>;
+	/**
+	 * Release what this driver OWNS (bentocache `disconnect`). A driver handed
+	 * an existing client must not implement it: closing a connection echo did
+	 * not open would break whoever else is on it.
+	 */
+	disconnect?(): Promise<void>;
 }
 
 /** A driver that supports tag-based grouped invalidation. */

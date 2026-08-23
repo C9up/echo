@@ -21,20 +21,40 @@ export class MemoryDriver implements TaggableDriver {
 	#sweepInterval: ReturnType<typeof setInterval>;
 
 	constructor(sweepIntervalMs = 60_000) {
-		this.#sweepInterval = setInterval(() => {
-			const now = Date.now();
-			for (const [key, entry] of this.#store) {
-				if (entry.staleUntil > 0 && entry.staleUntil < now) {
-					this.#evict(key, entry);
-				}
-			}
-		}, sweepIntervalMs);
+		this.#sweepInterval = setInterval(() => this.#sweep(), sweepIntervalMs);
 		if (
 			typeof this.#sweepInterval === "object" &&
 			"unref" in this.#sweepInterval
 		) {
 			(this.#sweepInterval as { unref(): void }).unref();
 		}
+	}
+
+	/** Evict every entry past its grace window. */
+	#sweep(): void {
+		const now = Date.now();
+		for (const [key, entry] of this.#store) {
+			if (entry.staleUntil > 0 && entry.staleUntil < now) {
+				this.#evict(key, entry);
+			}
+		}
+	}
+
+	/**
+	 * Drop expired entries now, without waiting for the sweep (bentocache
+	 * `prune`). Useful before measuring size, or in a test that must not depend
+	 * on a timer.
+	 */
+	async prune(): Promise<void> {
+		this.#sweep();
+	}
+
+	/**
+	 * Stop the sweep timer this driver owns (bentocache `disconnect`). The
+	 * entries stay readable; only the background work stops.
+	 */
+	async disconnect(): Promise<void> {
+		this.destroy();
 	}
 
 	destroy(): void {

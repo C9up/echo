@@ -183,4 +183,15 @@ export class TieredDriver implements TaggableDriver {
 	async flushTags(tags: string[]): Promise<void> {
 		return this.deleteByTag(tags);
 	}
+	/** Prune both layers (bentocache `prune`). */
+	async prune(): Promise<void> {
+		await this.#l1.prune?.();
+		await this.#l2.prune?.();
+	}
+
+	/** Release both layers (bentocache `disconnect`). */
+	async disconnect(): Promise<void> {
+		await this.#l1.disconnect?.();
+		await this.#l2.disconnect?.();
+	}
 }

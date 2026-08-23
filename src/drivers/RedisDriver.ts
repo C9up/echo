@@ -83,11 +83,18 @@ export class RedisDriver implements TaggableDriver {
 		}
 		if (!this.#pending) {
 			const resolver = this.#source;
-			this.#pending = Promise.resolve(resolver()).then((client) => {
-				this.#resolved = client;
-				this.#pending = undefined;
-				return client;
-			});
+			this.#pending = Promise.resolve(resolver())
+				.then((client) => {
+					this.#resolved = client;
+					return client;
+				})
+				// Cleared on failure too. Clearing only on success left the
+				// REJECTED promise cached forever, so one transient outage at
+				// startup broke every later call for the life of the process —
+				// a permanent failure with no error of its own to explain it.
+				.finally(() => {
+					this.#pending = undefined;
+				});
 		}
 		return this.#pending;
 	}
