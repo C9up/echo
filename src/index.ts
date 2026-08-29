@@ -29,7 +29,9 @@ export {
 	type DriverFactory,
 	drivers,
 	type MultiStoreConfig,
+	Store,
 	type StoreConfig,
+	store,
 } from "./StoreManager.js";
 export type {
 	CacheEmitter,

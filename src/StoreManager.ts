@@ -39,9 +39,90 @@ export interface StoreConfig {
 
 export interface MultiStoreConfig {
 	default: string;
-	stores: Record<string, StoreConfig>;
+	/**
+	 * The stores this application can use, by name. Each is a {@link store}
+	 * builder — the shape a cache config takes — or the plain
+	 * `{ driver, …options }` form kept for configs written against it.
+	 */
+	stores: Record<string, StoreConfig | Store>;
 	/** Shared emitter for all stores' events. */
 	emitter?: CacheEmitter;
+}
+
+/**
+ * A store, described the way a cache config describes one: a layer at a time.
+ *
+ *   stores: {
+ *     memoryOnly: store().useL1Layer(drivers.memory()),
+ *     default: store({ ttl: 60 })
+ *       .useL1Layer(drivers.memory())
+ *       .useL2Layer(drivers.redis({ connection: "main" })),
+ *   }
+ *
+ * One layer is that driver; two are a tiered driver over both, which is what
+ * the layering means — reads hit L1, misses fall to L2, and writes go to both.
+ */
+export class Store {
+	readonly #options: Omit<StoreConfig, "driver">;
+	#l1: DriverFactory | undefined;
+	#l2: DriverFactory | undefined;
+	#bus: CacheBus | undefined;
+
+	constructor(options: Omit<StoreConfig, "driver"> = {}) {
+		this.#options = options;
+	}
+
+	/** The fast layer, usually memory. */
+	useL1Layer(driver: DriverFactory): this {
+		this.#l1 = driver;
+		return this;
+	}
+
+	/** The shared layer, usually Redis — what makes the cache survive a restart. */
+	useL2Layer(driver: DriverFactory): this {
+		this.#l2 = driver;
+		return this;
+	}
+
+	/** The bus that keeps every instance's L1 in step after a write. */
+	useBus(bus: CacheBus): this {
+		this.#bus = bus;
+		return this;
+	}
+
+	/** The `{ driver, …options }` the manager consumes. */
+	entry(): StoreConfig {
+		const l1 = this.#l1;
+		const l2 = this.#l2;
+		if (!l1 && !l2) {
+			throw new Error(
+				"Echo: a store needs a layer — call useL1Layer() or useL2Layer() on it.",
+			);
+		}
+		if (l1 && l2) {
+			return {
+				...this.#options,
+				driver: drivers.tiered({ l1, l2, bus: this.#bus }),
+			};
+		}
+		const only = (l1 ?? l2) as DriverFactory;
+		if (this.#bus) {
+			throw new Error(
+				"Echo: a bus only means something with two layers — it keeps each instance's L1 in step. Add useL2Layer(), or drop useBus().",
+			);
+		}
+		return { ...this.#options, driver: only };
+	}
+}
+
+/** Start describing a store — AdonisJS's `store()`. */
+export function store(options?: Omit<StoreConfig, "driver">): Store {
+	return new Store(options);
+}
+
+/** Normalise either accepted form to the one the manager reads. */
+function entryOf(config: StoreConfig | Store): StoreConfig {
+	return config instanceof Store ? config.entry() : config;
 }
 
 /** Driver factory helpers (bento `drivers.memory` / `drivers.redis`). */
@@ -110,10 +191,11 @@ export class CacheStoreManager {
 		const existing = this.#built.get(store);
 		if (existing) return existing;
 
-		const cfg = this.#config.stores[store];
-		if (!cfg) {
+		const declared = this.#config.stores[store];
+		if (!declared) {
 			throw new Error(`Echo: unknown cache store "${store}"`);
 		}
+		const cfg = entryOf(declared);
 		const manager = new CacheManager(cfg.driver(), {
 			prefix: cfg.prefix,
 			ttl: cfg.ttl,
