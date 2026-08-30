@@ -11,6 +11,9 @@ pnpm add @c9up/echo
 ream configure @c9up/echo
 ```
 
+`ream add @c9up/echo` installs it, registers the provider and writes
+`config/cache.ts`. The rest of this page assumes that has run.
+
 ## Usage
 
 Register the provider, then name the cache stores in `config/cache.ts`:
