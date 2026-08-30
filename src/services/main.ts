@@ -25,6 +25,14 @@ export function getCache(): CacheManager | undefined {
 	return instance;
 }
 
+/**
+ * @internal Release the singleton, so a shut-down application does not leave a
+ * disconnected cache reachable through `services/main`.
+ */
+export function clearCache(): void {
+	instance = undefined;
+}
+
 const cache: CacheManager = new Proxy({} as CacheManager, {
 	get(_target, prop) {
 		// A module loader inspects what it imports before anyone uses it: it reads

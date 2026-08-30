@@ -1,7 +1,7 @@
 import { type CacheConfig, CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
 import { CacheStoreManager, type MultiStoreConfig } from "./StoreManager.js";
-import { setCache } from "./services/main.js";
+import { clearCache, getCache, setCache } from "./services/main.js";
 import type { CacheEmitter } from "./types.js";
 
 /**
@@ -109,9 +109,28 @@ export default class EchoProvider {
 		);
 	}
 
+	/** The cache THIS provider booted — not whatever the module singleton holds. */
+	#cache: CacheManager | undefined;
+
 	async boot(): Promise<void> {
-		setCache(await this.app.container.resolve<CacheManager>(CacheManager));
+		this.#cache = await this.app.container.resolve<CacheManager>(CacheManager);
+		setCache(this.#cache);
 	}
 
-	async shutdown(): Promise<void> {}
+	/**
+	 * Release the cache the app booted.
+	 *
+	 * The memory driver runs a sweep on a timer and the redis driver holds a
+	 * connection. Neither is released on its own, so across a dev reload or a
+	 * test run each cycle leaves another one behind.
+	 */
+	async shutdown(): Promise<void> {
+		if (!this.#cache) return;
+		await this.#cache.disconnect();
+		// Two applications can share a process — parallel tests, a hot reload.
+		// The module singleton holds whichever booted last, so it is only ours
+		// to clear while it still points at the cache this provider booted.
+		if (getCache() === this.#cache) clearCache();
+		this.#cache = undefined;
+	}
 }
