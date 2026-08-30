@@ -9,6 +9,7 @@
 
 interface Codemods {
 	addProvider(importPath: string): Promise<void>;
+	addEnvVars(vars: Record<string, string>): Promise<void>;
 	writeFile(
 		filePath: string,
 		content: string,
@@ -17,6 +18,13 @@ interface Codemods {
 }
 
 export async function configure(codemods: Codemods): Promise<void> {
+	// The config below reads these, so they are declared here. Writing the file
+	// without them leaves an application whose config asks the environment for
+	// something nothing ever put there.
+	await codemods.addEnvVars({
+		CACHE_STORE: "memory",
+	});
+
 	await codemods.addProvider("@c9up/echo/provider");
 	await codemods.writeFile(
 		"config/cache.ts",
