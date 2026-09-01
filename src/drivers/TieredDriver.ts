@@ -80,10 +80,34 @@ export class TieredDriver implements TaggableDriver {
 		this.#bus?.subscribe((message) => {
 			// Peer invalidation: only the local L1 needs clearing (L2 is shared).
 			if (message.type === "clear") {
-				void this.#l1.flush();
+				this.#invalidate("flush", () => this.#l1.flush());
 				return;
 			}
-			for (const key of message.keys) void this.#l1.delete(key);
+			for (const key of message.keys) {
+				this.#invalidate(key, () => this.#l1.delete(key));
+			}
+		});
+	}
+
+	/**
+	 * Apply one peer invalidation to L1, reporting rather than escaping.
+	 *
+	 * This runs inside a bus callback, so nobody awaits it: an L1 that rejects
+	 * — a Redis L1 whose socket just dropped, a driver mid-shutdown — was an
+	 * unhandled rejection, which on a default Node ends the process. A cache
+	 * layer failing to forget a key must not do that.
+	 *
+	 * It is reported and not retried: the entry keeps its own TTL, so the worst
+	 * case is one stale read window on this instance, and a retry loop against
+	 * a driver that is already failing buys nothing.
+	 */
+	#invalidate(what: string, run: () => Promise<unknown>): void {
+		void (async () => run())().catch((error: unknown) => {
+			process.stderr.write(
+				`[echo] tiered L1 invalidation of '${what}' failed; the local copy may be stale until it expires: ${
+					error instanceof Error ? error.message : String(error)
+				}\n`,
+			);
 		});
 	}
 

@@ -372,3 +372,44 @@ describe("echo > lifecycle passed down to both tiers", () => {
 		await expect(tiered.disconnect()).resolves.toBeUndefined();
 	});
 });
+
+describe("TieredDriver > an L1 that fails a peer invalidation", () => {
+	it("reports instead of raising an unhandled rejection", async () => {
+		const written: string[] = [];
+		const originalWrite = process.stderr.write.bind(process.stderr);
+		process.stderr.write = (chunk: string | Uint8Array): boolean => {
+			written.push(String(chunk));
+			return true;
+		};
+		const rejections: unknown[] = [];
+		const onUnhandled = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const l1 = new MemoryDriver();
+			// A Redis L1 whose socket just dropped, or a driver mid-shutdown.
+			l1.delete = async () => {
+				throw new Error("L1 is gone");
+			};
+			l1.flush = async () => {
+				throw new Error("L1 is gone");
+			};
+			const { bus: b, emit } = bus();
+			new TieredDriver({ l1, l2: new MemoryDriver(), bus: b });
+
+			// Nobody awaits a bus callback, so these rejections had nowhere to
+			// go — and on a default Node that ends the process over a cache
+			// failing to forget a key.
+			emit({ type: "delete", keys: ["a", "b"] });
+			emit({ type: "clear", keys: [] });
+			await new Promise((resolve) => setTimeout(resolve, 10));
+
+			expect(rejections).toEqual([]);
+			expect(written.join("")).toContain("tiered L1 invalidation");
+		} finally {
+			process.stderr.write = originalWrite;
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+});
