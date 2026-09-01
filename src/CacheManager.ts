@@ -156,7 +156,22 @@ export class CacheManager {
 		event: E,
 		payload: CacheEventMap[E],
 	): void {
-		this.#emitter?.emit(event, payload);
+		// Not just called: an Adonis emitter's `emit` is `async` and REJECTS when
+		// a listener throws and the application registered no error handler
+		// (`@adonisjs/events`: `if (this.#errorHandler) … else throw error`).
+		// Nobody awaits a cache event, so that rejection had nowhere to go and
+		// ended the process over a metrics listener. The interface said `void`,
+		// which is why nothing looked wrong — TypeScript accepts a
+		// promise-returning function for a `void` return.
+		void (async () => this.#emitter?.emit(event, payload))().catch(
+			(error: unknown) => {
+				process.stderr.write(
+					`[echo] '${String(event)}' listener failed: ${
+						error instanceof Error ? error.message : String(error)
+					}\n`,
+				);
+			},
+		);
 		for (const listener of this.#listeners[event]) {
 			try {
 				listener(payload);

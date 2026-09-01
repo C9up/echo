@@ -167,3 +167,44 @@ describe("echo failure paths > expire() immediate staleness", () => {
 		expect(await driver.get("k")).toBeNull();
 	});
 });
+
+describe("echo failure paths > an Adonis-shaped emitter", () => {
+	it("reports a rejecting listener instead of ending the process", async () => {
+		// `@adonisjs/events`' emit is `async` and rethrows when a listener throws
+		// and the application registered no error handler. Nobody awaits a cache
+		// event, so that rejection had nowhere to go — the interface said `void`,
+		// which accepts a promise-returning function, so nothing looked wrong.
+		const written: string[] = [];
+		const originalWrite = process.stderr.write.bind(process.stderr);
+		const rejections: unknown[] = [];
+		const onUnhandled = (reason: unknown): void => {
+			rejections.push(reason);
+		};
+		process.stderr.write = (chunk: string | Uint8Array): boolean => {
+			written.push(String(chunk));
+			return true;
+		};
+		process.on("unhandledRejection", onUnhandled);
+		try {
+			const cache = new CacheManager(new MemoryDriver(), {
+				emitter: {
+					emit: async () => {
+						throw new Error("listener failed");
+					},
+				},
+			});
+
+			// The cache call itself must still succeed: a metrics listener is an
+			// observer, not a participant.
+			await cache.set("k", "v", 60);
+			expect(await cache.get("k")).toBe("v");
+			await new Promise((resolve) => setTimeout(resolve, 15));
+
+			expect(rejections).toEqual([]);
+			expect(written.join("")).toContain("listener failed");
+		} finally {
+			process.stderr.write = originalWrite;
+			process.off("unhandledRejection", onUnhandled);
+		}
+	});
+});

@@ -163,5 +163,16 @@ export interface CacheEventMap {
  * (ream's emitter, Node's EventEmitter, mitt, …). echo never imports one.
  */
 export interface CacheEmitter {
-	emit(event: string, payload: unknown): void;
+	/**
+	 * NAMED DEVIATION from `@adonisjs/events`, which declares
+	 * `emit(): Promise<void>` on its own class. This is a DUCK-TYPE of an
+	 * emitter echo does not own, so it must also accept a synchronous one — a
+	 * Node `EventEmitter` returns `boolean`, for instance.
+	 *
+	 * `unknown` rather than `void`, because `void` ACCEPTS a
+	 * promise-returning function and then reads as if there were nothing to
+	 * handle: that is what hid an Adonis emitter's rejection here. Same choice
+	 * warden's `AuthManager` already made.
+	 */
+	emit(event: string, payload: unknown): unknown;
 }
