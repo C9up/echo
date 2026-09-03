@@ -224,7 +224,10 @@ describe("echo > writing through the tiers", () => {
 
 		expect(l1.writes[0]).toMatchObject({ key: "k", value: "v" });
 		expect(l2.writes[0]).toMatchObject({ key: "k", value: "v" });
-		expect(published).toEqual([{ type: "delete", keys: ["k"] }]);
+		expect(published).toMatchObject([{ type: "delete", keys: ["k"] }]);
+		// Stamped with the tier that sent it, so a bus that delivers back to its
+		// publisher does not make this instance undo its own write.
+		expect(published[0]?.senderId).toEqual(expect.any(String));
 	});
 
 	it("writes a plain tier through set(), carrying the TTL", async () => {
@@ -247,7 +250,10 @@ describe("echo > writing through the tiers", () => {
 		expect(await tiered.delete("k")).toBe(true);
 		expect(l1.deleted).toEqual(["k"]);
 		expect(l2.deleted).toEqual(["k"]);
-		expect(published).toEqual([{ type: "delete", keys: ["k"] }]);
+		expect(published).toMatchObject([{ type: "delete", keys: ["k"] }]);
+		// Stamped with the tier that sent it, so a bus that delivers back to its
+		// publisher does not make this instance undo its own write.
+		expect(published[0]?.senderId).toEqual(expect.any(String));
 
 		expect(await tiered.delete("missing")).toBe(false);
 	});
@@ -261,7 +267,8 @@ describe("echo > writing through the tiers", () => {
 
 		expect(l1.flushed).toBe(1);
 		expect(l2.flushed).toBe(1);
-		expect(published).toEqual([{ type: "clear", keys: [] }]);
+		expect(published).toMatchObject([{ type: "clear", keys: [] }]);
+		expect(published[0]?.senderId).toEqual(expect.any(String));
 	});
 });
 
@@ -288,7 +295,7 @@ describe("echo > tags across the tiers", () => {
 
 		await tiered.deleteByTag(["invoices"]);
 
-		expect(published.at(-1)).toEqual({ type: "clear", keys: [] });
+		expect(published.at(-1)).toMatchObject({ type: "clear", keys: [] });
 	});
 
 	it("flushTags is the same operation under its old name", async () => {

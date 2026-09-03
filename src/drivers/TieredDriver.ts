@@ -19,6 +19,23 @@ import type {
 export interface BusMessage {
 	type: "delete" | "clear";
 	keys: string[];
+	/**
+	 * The tier that published it.
+	 *
+	 * A pub/sub bus delivers to every subscriber INCLUDING the publisher —
+	 * Redis does, and Redis pub/sub is what this is for. Without a sender to
+	 * recognise, every `set` published a delete, received it back, and dropped
+	 * the L1 copy it had just written: L1 held nothing after any write, and
+	 * every read went to L2. Upstream draws the same line one layer down, where
+	 * each bus transport stamps its own id and skips what it sent
+	 * (`@boringnode/bus`, `transports/memory.js`: `if (busId === this.#id)
+	 * continue`).
+	 *
+	 * Optional, and a message without one is acted on: a bus that predates this
+	 * field keeps working, at worst doing the redundant local invalidation it
+	 * already did.
+	 */
+	senderId?: string;
 }
 
 /** Duck-typed pub/sub bus for cross-instance L1 invalidation (e.g. Redis pub/sub). */
@@ -68,16 +85,42 @@ async function writeEntry(
 	await driver.set(key, value, options.ttlSeconds);
 }
 
+/**
+ * Run one tier's operation, capturing a rejection instead of letting it escape.
+ *
+ * The two tiers are attempted independently on purpose: awaiting L1 first meant
+ * a local driver that threw — a Redis L1 whose socket just dropped, one
+ * mid-shutdown — aborted the call before the SHARED tier was touched, so a
+ * `delete` left the copy every other instance reads. Upstream reaches the same
+ * end by never awaiting L1 at all (`this.l1?.set(...)` with no await, then
+ * `await this.l2?.set(...)`). The failure is still reported, after both tiers
+ * have had their turn.
+ */
+async function settle<T>(
+	run: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+	try {
+		return { ok: true, value: await run() };
+	} catch (error) {
+		return { ok: false, error };
+	}
+}
+
 export class TieredDriver implements TaggableDriver {
 	#l1: CacheDriver;
 	#l2: CacheDriver;
 	#bus: CacheBus | undefined;
+	/** This tier, as a bus sender. */
+	readonly #id = crypto.randomUUID();
 
 	constructor(options: TieredDriverOptions) {
 		this.#l1 = options.l1;
 		this.#l2 = options.l2;
 		this.#bus = options.bus;
 		this.#bus?.subscribe((message) => {
+			// Our own invalidation, come back round the bus. Acting on it would
+			// undo the write that sent it.
+			if (message.senderId === this.#id) return;
 			// Peer invalidation: only the local L1 needs clearing (L2 is shared).
 			if (message.type === "clear") {
 				this.#invalidate("flush", () => this.#l1.flush());
@@ -157,22 +200,46 @@ export class TieredDriver implements TaggableDriver {
 		value: unknown,
 		options: DriverSetOptions,
 	): Promise<void> {
-		await writeEntry(this.#l1, key, value, options);
-		await writeEntry(this.#l2, key, value, options);
-		await this.#bus?.publish({ type: "delete", keys: [key] });
+		const l1 = await settle(() => writeEntry(this.#l1, key, value, options));
+		const l2 = await settle(() => writeEntry(this.#l2, key, value, options));
+		// Peers are told only when the shared write landed. Telling them to drop
+		// their L1 for a value that never reached L2 sends every one of them to a
+		// tier that does not have it. Upstream gates the same publish on the same
+		// thing (`if (this.l2 && l2Success || !this.l2)`).
+		if (l2.ok) {
+			await this.#bus?.publish({
+				type: "delete",
+				keys: [key],
+				senderId: this.#id,
+			});
+		}
+		if (!l1.ok) throw l1.error;
+		if (!l2.ok) throw l2.error;
 	}
 
 	async delete(key: string): Promise<boolean> {
-		const l1 = await this.#l1.delete(key);
-		const l2 = await this.#l2.delete(key);
-		await this.#bus?.publish({ type: "delete", keys: [key] });
-		return l1 || l2;
+		const l1 = await settle(() => this.#l1.delete(key));
+		const l2 = await settle(() => this.#l2.delete(key));
+		if (l2.ok) {
+			await this.#bus?.publish({
+				type: "delete",
+				keys: [key],
+				senderId: this.#id,
+			});
+		}
+		if (!l1.ok) throw l1.error;
+		if (!l2.ok) throw l2.error;
+		return l1.value || l2.value;
 	}
 
 	async flush(): Promise<void> {
-		await this.#l1.flush();
-		await this.#l2.flush();
-		await this.#bus?.publish({ type: "clear", keys: [] });
+		const l1 = await settle(() => this.#l1.flush());
+		const l2 = await settle(() => this.#l2.flush());
+		if (l2.ok) {
+			await this.#bus?.publish({ type: "clear", keys: [], senderId: this.#id });
+		}
+		if (!l1.ok) throw l1.error;
+		if (!l2.ok) throw l2.error;
 	}
 
 	async has(key: string): Promise<boolean> {
@@ -196,11 +263,15 @@ export class TieredDriver implements TaggableDriver {
 				"Echo: TieredDriver.deleteByTag requires both tiers to be taggable",
 			);
 		}
-		await l1.deleteByTag(tags);
-		await l2.deleteByTag(tags);
+		const local = await settle(() => l1.deleteByTag(tags));
+		const shared = await settle(() => l2.deleteByTag(tags));
 		// Peers can't map tags → keys locally; broadcast a clear so their L1 drops
 		// any tagged copies (conservative but correct).
-		await this.#bus?.publish({ type: "clear", keys: [] });
+		if (shared.ok) {
+			await this.#bus?.publish({ type: "clear", keys: [], senderId: this.#id });
+		}
+		if (!local.ok) throw local.error;
+		if (!shared.ok) throw shared.error;
 	}
 
 	/** @deprecated alias of {@link deleteByTag}. */
@@ -209,13 +280,19 @@ export class TieredDriver implements TaggableDriver {
 	}
 	/** Prune both layers (bentocache `prune`). */
 	async prune(): Promise<void> {
-		await this.#l1.prune?.();
-		await this.#l2.prune?.();
+		const l1 = await settle(async () => this.#l1.prune?.());
+		const l2 = await settle(async () => this.#l2.prune?.());
+		if (!l1.ok) throw l1.error;
+		if (!l2.ok) throw l2.error;
 	}
 
 	/** Release both layers (bentocache `disconnect`). */
 	async disconnect(): Promise<void> {
-		await this.#l1.disconnect?.();
-		await this.#l2.disconnect?.();
+		// Both are released even when the first refuses: a tier left connected
+		// because its neighbour threw is a socket nobody closes.
+		const l1 = await settle(async () => this.#l1.disconnect?.());
+		const l2 = await settle(async () => this.#l2.disconnect?.());
+		if (!l1.ok) throw l1.error;
+		if (!l2.ok) throw l2.error;
 	}
 }

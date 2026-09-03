@@ -52,15 +52,25 @@ function resolveMs(duration: Duration | undefined): number | undefined {
 
 const TIMEOUT: unique symbol = Symbol("echo.timeout");
 
+/** A timer handle that can be unreferenced — Node's, not the browser's. */
+function hasUnref(timer: unknown): timer is { unref(): void } {
+	return (
+		typeof timer === "object" &&
+		timer !== null &&
+		typeof Reflect.get(timer, "unref") === "function"
+	);
+}
+
 function withTimeout<T>(
 	promise: Promise<T>,
 	ms: number,
 ): Promise<T | typeof TIMEOUT> {
 	return new Promise((resolve, reject) => {
 		const timer = setTimeout(() => resolve(TIMEOUT), ms);
-		if (typeof timer === "object" && "unref" in timer) {
-			(timer as { unref(): void }).unref();
-		}
+		// A soft timeout is for the request in flight, not a reason for the
+		// process to stay up. Checked rather than asserted: the browser's
+		// `setTimeout` answers a number, which has no `unref`.
+		if (hasUnref(timer)) timer.unref();
 		promise.then(
 			(value) => {
 				clearTimeout(timer);
