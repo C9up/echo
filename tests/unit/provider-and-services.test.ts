@@ -48,11 +48,20 @@ afterEach(() => {
 });
 
 describe("echo > the provider", () => {
-	it("binds the manager under both the class and the string token", async () => {
+	it("binds the manager under the class and both string tokens", async () => {
 		const context = app({});
 		new EchoProvider(context).register();
 
-		expect([...context.bindings.keys()]).toEqual([CacheManager, "cache"]);
+		// `echo.cache` is the namespaced form upstream uses for a satellite's
+		// binding; the bare `cache` stays for everything already asking for it.
+		expect([...context.bindings.keys()]).toEqual([
+			CacheManager,
+			"echo.cache",
+			"cache",
+		]);
+		expect(await context.container.resolve("echo.cache")).toBeInstanceOf(
+			CacheManager,
+		);
 		expect(await context.container.resolve("cache")).toBeInstanceOf(
 			CacheManager,
 		);

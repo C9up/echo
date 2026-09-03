@@ -23,6 +23,11 @@ import type { CacheManager } from "./CacheManager.js";
 declare module "@c9up/ream/types" {
 	interface ContainerBindings {
 		/** The cache manager, bound by `EchoProvider`. */
+		"echo.cache": CacheManager;
+		/**
+		 * The same binding under the name it had before the token carried its
+		 * package. Kept bound so an existing `container.make(...)` resolves.
+		 */
 		cache: CacheManager;
 	}
 }
