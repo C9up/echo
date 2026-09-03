@@ -9,6 +9,8 @@
  * @implements MISS-10
  */
 
+import "./augmentations.js";
+
 export type { CacheConfig, CacheDriver } from "./CacheManager.js";
 export { CacheManager } from "./CacheManager.js";
 export { MemoryDriver } from "./drivers/MemoryDriver.js";

@@ -1,3 +1,4 @@
+import "./augmentations.js";
 import { type CacheConfig, CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
 import { CacheStoreManager, type MultiStoreConfig } from "./StoreManager.js";
