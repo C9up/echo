@@ -122,8 +122,8 @@ describe("echo > reading through the tiers", () => {
 		expect(await new TieredDriver({ l1, l2 }).get("k")).toBe("from-l2");
 		expect(l1.writes).toHaveLength(1);
 		// The promotion carries the REMAINING life, not a fresh one.
-		expect(l1.writes[0].options.ttlSeconds).toBeGreaterThan(0);
-		expect(l1.writes[0].options.ttlSeconds).toBeLessThanOrEqual(60);
+		expect(l1.writes[0]?.options.ttlSeconds).toBeGreaterThan(0);
+		expect(l1.writes[0]?.options.ttlSeconds).toBeLessThanOrEqual(60);
 	});
 
 	it("promotes an entry that genuinely never expires with no TTL", async () => {
@@ -133,7 +133,7 @@ describe("echo > reading through the tiers", () => {
 
 		await new TieredDriver({ l1, l2 }).get("k");
 
-		expect(l1.writes[0].options.ttlSeconds).toBeUndefined();
+		expect(l1.writes[0]?.options.ttlSeconds).toBeUndefined();
 	});
 
 	it("refuses to promote when L2 cannot say when the entry dies", async () => {
