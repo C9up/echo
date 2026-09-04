@@ -20,7 +20,7 @@ import { MemoryDriver } from "./drivers/MemoryDriver.js";
 import { type RedisClient, RedisDriver } from "./drivers/RedisDriver.js";
 import { type CacheBus, TieredDriver } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
-import { quasarConnection } from "./quasar.js";
+import { quasarBus, quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter, CacheEventMap } from "./types.js";
 
 /** A lazily-instantiated driver (built once per store, on first `use`). */
@@ -127,8 +127,16 @@ function entryOf(config: StoreConfig | Store): StoreConfig {
 
 /** Driver factory helpers (bento `drivers.memory` / `drivers.redis`). */
 export const drivers = {
-	memory(options?: { sweepIntervalMs?: number }): DriverFactory {
-		return () => new MemoryDriver(options?.sweepIntervalMs);
+	/**
+	 * `maxItems` bounds the store by COUNT, which a TTL cannot: a cache keyed by
+	 * a user id or a search term grows until the process runs out of memory,
+	 * however short each entry's life. Omit it for no ceiling.
+	 */
+	memory(options?: {
+		sweepIntervalMs?: number;
+		maxItems?: number;
+	}): DriverFactory {
+		return () => new MemoryDriver(options?.sweepIntervalMs, options?.maxItems);
 	},
 	/**
 	 * Either hand it a client, or name a quasar connection — the AdonisJS shape,
@@ -146,6 +154,17 @@ export const drivers = {
 		}
 		return () =>
 			new RedisDriver(quasarConnection(options.connection), options.prefix);
+	},
+	/**
+	 * Redis pub/sub as the bus that keeps each instance's L1 in step.
+	 *
+	 * Named alongside `redis` and taking the same `connection`, because it is
+	 * the same deployment decision: a two-layer store without a bus is wrong as
+	 * soon as a second instance exists, each process serving its own L1 copy of
+	 * a key another has already deleted.
+	 */
+	redisBus(options?: { connection?: string; channel?: string }): CacheBus {
+		return quasarBus(options);
 	},
 	tiered(options: {
 		l1: DriverFactory;

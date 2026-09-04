@@ -19,14 +19,47 @@ export class MemoryDriver implements TaggableDriver {
 	#store: Map<string, StoredEntry> = new Map();
 	#tagIndex: Map<string, Set<string>> = new Map();
 	#sweepInterval: ReturnType<typeof setInterval>;
+	/**
+	 * How many entries this driver holds before it starts dropping the oldest.
+	 *
+	 * Eviction was by TTL alone, which bounds how long an entry lives and not
+	 * how many there are: a cache keyed by anything unbounded — a user id, a
+	 * search term — grew until the process ran out of memory, and only a key
+	 * that was written ever left. `0` keeps the old behaviour for a caller that
+	 * genuinely wants no ceiling.
+	 */
+	readonly #maxItems: number;
 
-	constructor(sweepIntervalMs = 60_000) {
+	constructor(sweepIntervalMs = 60_000, maxItems = 0) {
+		this.#maxItems = maxItems > 0 ? maxItems : 0;
 		this.#sweepInterval = setInterval(() => this.#sweep(), sweepIntervalMs);
 		if (
 			typeof this.#sweepInterval === "object" &&
 			"unref" in this.#sweepInterval
 		) {
 			(this.#sweepInterval as { unref(): void }).unref();
+		}
+	}
+
+	/**
+	 * Drop the oldest entries until the store fits under its ceiling.
+	 *
+	 * Expired ones go first — evicting a live entry while a dead one sits in
+	 * the map would throw away a value someone still wants. Only if that is not
+	 * enough does it take the least recently written.
+	 */
+	#enforceCeiling(): void {
+		if (this.#maxItems === 0 || this.#store.size <= this.#maxItems) return;
+		const now = Date.now();
+		for (const [key, entry] of this.#store) {
+			if (this.#store.size <= this.#maxItems) return;
+			if (entry.staleUntil > 0 && entry.staleUntil < now) {
+				this.#evict(key, entry);
+			}
+		}
+		for (const [key, entry] of this.#store) {
+			if (this.#store.size <= this.#maxItems) return;
+			this.#evict(key, entry);
 		}
 	}
 
@@ -130,7 +163,12 @@ export class MemoryDriver implements TaggableDriver {
 		if (prev !== undefined) {
 			for (const t of prev.tags) this.#tagIndex.get(t)?.delete(key);
 		}
+		// Re-inserting moves the key to the end of the Map's iteration order, so
+		// the first entry is always the least recently WRITTEN — which is the
+		// order this evicts in.
+		this.#store.delete(key);
 		this.#store.set(key, { value, expiresAt, staleUntil, tags });
+		this.#enforceCeiling();
 		for (const tag of tags) {
 			let set = this.#tagIndex.get(tag);
 			if (!set) {
