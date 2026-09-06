@@ -88,9 +88,9 @@ describe("echo > the quasar bridge", () => {
 		const resolve = await load();
 
 		await expect(resolve("sessions")()).rejects.toThrow(
-			/"sessions" cache store/,
+			/quasar connection "sessions"/,
 		);
-		await expect(resolve()()).rejects.toThrow(/"default" cache store/);
+		await expect(resolve()()).rejects.toThrow(/quasar connection "default"/);
 	});
 
 	it("refuses a module that is not a connection manager", async () => {
@@ -109,7 +109,7 @@ describe("echo > the quasar bridge", () => {
 			mockQuasar({ default: { connection: () => client(missing) } });
 
 			await expect((await load())("main")(), missing).rejects.toThrow(
-				/does not carry the commands this cache needs/,
+				new RegExp(`connection 'main' is missing ${missing}`),
 			);
 		}
 	});
