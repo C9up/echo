@@ -53,7 +53,19 @@ export interface CacheDriver {
 	get<T = unknown>(key: string): Promise<T | null>;
 	set(key: string, value: unknown, ttlSeconds?: number): Promise<void>;
 	delete(key: string): Promise<boolean>;
-	flush(): Promise<void>;
+	/**
+	 * Remove everything — or, when `prefix` is given, only the keys under it.
+	 *
+	 * A namespaced view shares this driver, so a `clear()` on one had to be
+	 * able to say WHICH subtree it meant. Without that it flushed the whole
+	 * store, and a namespace per tenant is the documented use: one tenant
+	 * clearing its own cache emptied everyone else's.
+	 *
+	 * A driver that cannot scope the removal must REFUSE when a prefix is
+	 * given. Flushing everything instead is the failure this parameter exists
+	 * to prevent, and it is silent.
+	 */
+	flush(prefix?: string): Promise<void>;
 	has(key: string): Promise<boolean>;
 	/** Grace-aware read: returns the entry even if stale, or `null` if physically gone. */
 	getEntry?<T = unknown>(key: string): Promise<CacheEntry<T> | null>;

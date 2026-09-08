@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import {
 	type BusMessage,
@@ -340,5 +341,156 @@ describe("echo > a tiered driver lets go of the bus", () => {
 		refuse = false;
 		await tiered.disconnect();
 		expect(handlers.size).toBe(0);
+	});
+
+	it("connects again after a disconnect", async () => {
+		// A store stopped and started in one process — a hot reload, a test —
+		// has to come back on the bus rather than on nothing.
+		const { bus, listeners } = releasableBus();
+		const l1 = new MemoryDriver();
+		const cache = new CacheManager(
+			new TieredDriver({ l1, l2: new MemoryDriver(), bus }),
+		);
+
+		await cache.connect();
+		await cache.disconnect();
+		await cache.connect();
+
+		expect(listeners()).toBe(1);
+		await cache.disconnect();
+		expect(listeners()).toBe(0);
+	});
+
+	it("does not leave a subscription behind when a shutdown overtakes a connect", async () => {
+		// `disconnect()` read the handler while `connect()` was still awaiting
+		// the bus, saw none, and did nothing — then the subscribe landed and
+		// installed a listener nothing was tracking.
+		const handlers = new Set<(m: BusMessage) => void>();
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const tiered = new TieredDriver({
+			l1: new MemoryDriver(),
+			l2: new MemoryDriver(),
+			bus: {
+				publish() {},
+				async subscribe(handler: (m: BusMessage) => void) {
+					await held;
+					handlers.add(handler);
+				},
+				unsubscribe(handler: (m: BusMessage) => void) {
+					handlers.delete(handler);
+				},
+			},
+		});
+
+		const connecting = tiered.connect();
+		const stopping = tiered.disconnect();
+		release?.();
+		await connecting;
+		await stopping;
+
+		expect(handlers.size).toBe(0);
+	});
+
+	it("makes NO operation touch the driver before the connection settles", async () => {
+		// The wait was added to four methods by hand, and `getOrSet`,
+		// `deleteMany`, `expire`, `clear`, `setWithTags`, `deleteByTag` and
+		// `prune` went without — so a store built after `ready()` read and
+		// wrote before it had joined the bus, and any invalidation sent in that
+		// window was missed for good.
+		//
+		// Driven off the public surface rather than a list, so a method added
+		// later is covered without anyone remembering to come back here.
+		const touched: string[] = [];
+		let release: (() => void) | undefined;
+		const held = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const watching: CacheDriver = {
+			get: async (key) => {
+				touched.push(`get:${key}`);
+				return null;
+			},
+			set: async (key) => {
+				touched.push(`set:${key}`);
+			},
+			delete: async (key) => {
+				touched.push(`delete:${key}`);
+				return false;
+			},
+			flush: async () => {
+				touched.push("flush");
+			},
+			has: async (key) => {
+				touched.push(`has:${key}`);
+				return false;
+			},
+			prune: async () => {
+				touched.push("prune");
+			},
+			connect: async () => {
+				await held;
+			},
+		};
+
+		const calls: Array<[string, () => Promise<unknown>]> = [
+			["get", () => cache.get("k")],
+			["set", () => cache.set("k", 1)],
+			["delete", () => cache.delete("k")],
+			["deleteMany", () => cache.deleteMany(["k"])],
+			["has", () => cache.has("k")],
+			["missing", () => cache.missing("k")],
+			["pull", () => cache.pull("k")],
+			["expire", () => cache.expire("k")],
+			["clear", () => cache.clear()],
+			["prune", () => cache.prune()],
+			["getOrSet", () => cache.getOrSet("k", 60, async () => 1)],
+			["setWithTags", () => cache.setWithTags("k", 1, ["t"])],
+			["deleteByTag", () => cache.deleteByTag(["t"])],
+			["flushTags", () => cache.flushTags(["t"])],
+		];
+		const cache = new CacheManager(watching);
+		void cache.connect();
+		const inFlight = calls.map(([, run]) => run().catch(() => {}));
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(touched).toEqual([]);
+
+		release?.();
+		await Promise.all(inFlight);
+		expect(touched.length).toBeGreaterThan(0);
+	});
+
+	it("opens the connection an operation finds closed, and retries a failure", async () => {
+		// A store built after `ready()` connects on its way out of `use()`, and
+		// that connect can fail. An operation that only WAITED then went on to
+		// read and write off the bus, for good — nothing would ever try again.
+		let attempts = 0;
+		const cache = new CacheManager({
+			get: async () => null,
+			set: async () => {},
+			delete: async () => false,
+			flush: async () => {},
+			has: async () => false,
+			connect: async () => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("the bus is down");
+			},
+		});
+
+		// The read still answers — an unreachable bus costs staleness, not
+		// every read — but it has tried.
+		expect(await cache.get("k")).toBeNull();
+		expect(attempts).toBe(1);
+
+		expect(await cache.get("k")).toBeNull();
+		expect(attempts).toBe(2);
+
+		// And once it succeeds, it stops trying.
+		expect(await cache.get("k")).toBeNull();
+		expect(attempts).toBe(2);
 	});
 });

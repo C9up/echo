@@ -20,6 +20,15 @@ export interface BusMessage {
 	type: "delete" | "clear";
 	keys: string[];
 	/**
+	 * Which subtree a `clear` covers. Absent means the whole store.
+	 *
+	 * A namespaced clear that told its peers "drop everything" threw away
+	 * every other tenant's L1 entries on those instances — the same mistake
+	 * as flushing locally, one hop away. A message from an older instance
+	 * carries none, and is acted on as the whole-store clear it meant.
+	 */
+	prefix?: string;
+	/**
 	 * The tier that published it.
 	 *
 	 * A pub/sub bus delivers to every subscriber INCLUDING the publisher —
@@ -149,7 +158,7 @@ export class TieredDriver implements TaggableDriver {
 			if (message.senderId === this.#id) return;
 			// Peer invalidation: only the local L1 needs clearing (L2 is shared).
 			if (message.type === "clear") {
-				this.#invalidate("flush", () => this.#l1.flush());
+				this.#invalidate("flush", () => this.#l1.flush(message.prefix));
 				return;
 			}
 			for (const key of message.keys) {
@@ -295,11 +304,19 @@ export class TieredDriver implements TaggableDriver {
 		return l1.value || l2.value;
 	}
 
-	async flush(): Promise<void> {
-		const l1 = await settle(() => this.#l1.flush());
-		const l2 = await settle(() => this.#l2.flush());
+	async flush(prefix?: string): Promise<void> {
+		const l1 = await settle(() => this.#l1.flush(prefix));
+		const l2 = await settle(() => this.#l2.flush(prefix));
 		if (l2.ok) {
-			await this.#bus?.publish({ type: "clear", keys: [], senderId: this.#id });
+			// The prefix travels: a peer that flushed its WHOLE L1 on a
+			// namespaced clear would throw away every other tenant's entries
+			// on that instance, which is the same mistake one hop away.
+			await this.#bus?.publish({
+				type: "clear",
+				keys: [],
+				prefix,
+				senderId: this.#id,
+			});
 		}
 		if (!l1.ok) throw l1.error;
 		if (!l2.ok) throw l2.error;
@@ -355,6 +372,11 @@ export class TieredDriver implements TaggableDriver {
 		// because its neighbour threw is a socket nobody closes, and a listener
 		// left on the bus is an L1 nobody will read acting on invalidations for
 		// a driver that no longer exists.
+		// A subscribe still in flight finishes FIRST, so its listener is one this
+		// teardown can see. Reading the handler ahead of it saw none, did
+		// nothing, and the subscribe then installed a listener nothing was
+		// tracking any more.
+		if (this.#connecting) await this.#connecting.catch(() => {});
 		// Forgotten only once the bus has accepted its removal. Cleared first, a
 		// rejecting unsubscribe left a live listener nothing could name again —
 		// not to retry it, not to remove it at a second shutdown.

@@ -220,16 +220,19 @@ export class RedisDriver implements TaggableDriver {
 		await this.#applyTags(key, tags, physical);
 	}
 
-	async flush(): Promise<void> {
+	async flush(prefix?: string): Promise<void> {
 		const client = await this.#client();
 		const scan = client.scan;
 		if (typeof scan === "function") {
+			// The driver's own prefix scopes it to this store; `prefix` scopes
+			// it further, to the namespace that asked.
+			const match = `${this.#prefix}${prefix ?? ""}`;
 			let cursor = "0";
 			do {
 				const [nextCursor, keys] = await scan(
 					cursor,
 					"MATCH",
-					`${this.#prefix}*`,
+					`${match}*`,
 					"COUNT",
 					100,
 				);

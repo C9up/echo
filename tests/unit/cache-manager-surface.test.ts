@@ -222,6 +222,36 @@ describe("echo > namespaces", () => {
 		expect(await driver.get("app:users:k")).toBe("v");
 	});
 
+	it("clears ONLY its own subtree", async () => {
+		// A namespace per tenant is the documented use, so a `clear()` that
+		// flushes the whole store hands one tenant the power to empty every
+		// other tenant's cache — from an operation they are allowed to run.
+		const { cache } = make();
+		await cache.set("outside", "keep");
+		const tenantA = cache.namespace("tenant-a");
+		const tenantB = cache.namespace("tenant-b");
+		await tenantA.set("inside", "drop");
+		await tenantB.set("inside", "keep too");
+
+		await tenantA.clear();
+
+		expect(await tenantA.get("inside")).toBeNull();
+		expect(await cache.get("outside")).toBe("keep");
+		expect(await tenantB.get("inside")).toBe("keep too");
+	});
+
+	it("does not clear a sibling whose name starts the same way", async () => {
+		// Prefix matching is on the SEPARATOR, not the string: `tenant-a` must
+		// not take `tenant-abc` with it.
+		const { cache } = make();
+		await cache.namespace("tenant-a").set("k", "a");
+		await cache.namespace("tenant-abc").set("k", "abc");
+
+		await cache.namespace("tenant-a").clear();
+
+		expect(await cache.namespace("tenant-abc").get("k")).toBe("abc");
+	});
+
 	it("shares the driver, so a clear reaches both", async () => {
 		const { cache } = make();
 		const scoped = cache.namespace("users");

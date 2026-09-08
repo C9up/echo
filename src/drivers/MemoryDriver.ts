@@ -208,9 +208,22 @@ export class MemoryDriver implements TaggableDriver {
 		return this.#store.delete(key);
 	}
 
-	async flush(): Promise<void> {
-		this.#store.clear();
-		this.#tagIndex.clear();
+	async flush(prefix?: string): Promise<void> {
+		if (prefix === undefined) {
+			this.#store.clear();
+			this.#tagIndex.clear();
+			return;
+		}
+		for (const key of [...this.#store.keys()]) {
+			if (key.startsWith(prefix)) this.#store.delete(key);
+		}
+		// The tag index points at keys; the ones that are gone go with them.
+		for (const [tag, keys] of [...this.#tagIndex.entries()]) {
+			for (const key of [...keys]) {
+				if (key.startsWith(prefix)) keys.delete(key);
+			}
+			if (keys.size === 0) this.#tagIndex.delete(tag);
+		}
 	}
 
 	async has(key: string): Promise<boolean> {

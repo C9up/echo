@@ -160,8 +160,10 @@ export class CacheManager {
 	 * alone made the first example in the README throw on its second line.
 	 */
 	#stores: StoreFacade | undefined;
-	/** A connect in flight or already settled, so it happens once. */
+	/** A connect in flight, so two callers do not open two. */
 	#connecting: Promise<void> | undefined;
+	/** Whether the driver's external work is open. Reset by `disconnect()`. */
+	#connected = false;
 
 	constructor(driver: CacheDriver, config?: CacheConfig, shared?: SharedState) {
 		this.#driver = driver;
@@ -259,6 +261,7 @@ export class CacheManager {
 	 * A driver without the hook reports nothing pruned rather than failing.
 	 */
 	async prune(): Promise<void> {
+		await this.#whenConnected();
 		await this.#driver.prune?.();
 	}
 
@@ -298,18 +301,22 @@ export class CacheManager {
 	 * everyone until their TTL.
 	 */
 	async connect(): Promise<void> {
+		if (this.#connected) return;
 		// Once. Two callers — the provider readying, and the first operation on
 		// a store built after that — must not open two subscriptions.
 		this.#connecting ??= (async () => {
 			await this.#driver.connect?.();
+			this.#connected = true;
 		})();
 		try {
 			await this.#connecting;
-		} catch (error) {
-			// Forgotten, so a later call gets to try again rather than replaying
-			// the same rejection for the life of the process.
+		} finally {
+			// Forgotten either way. On failure so a later call gets to try again
+			// rather than replaying the same rejection for the life of the
+			// process; on success because `#connected` is what says so, and a
+			// memo kept past a `disconnect()` made the next `connect()` a no-op
+			// on a connection that had since been closed.
 			this.#connecting = undefined;
-			throw error;
 		}
 	}
 
@@ -323,7 +330,17 @@ export class CacheManager {
 	 * every read would cost far more.
 	 */
 	async #whenConnected(): Promise<void> {
-		if (this.#connecting) await this.#connecting.catch(() => {});
+		if (this.#connected) return;
+		// STARTED here, not merely awaited. A store built after the application
+		// was ready connects on its way out of `use()`, and a connect that
+		// failed leaves nothing in flight — so an operation that only waited
+		// went on to read and write off the bus, for good. Attempting it means
+		// a transient failure is retried by the next operation instead.
+		//
+		// The failure is not raised: the provider refuses the boot when the bus
+		// cannot be reached, and after that an unreachable bus costs staleness.
+		// Refusing every read would cost far more.
+		await this.connect().catch(() => {});
 	}
 
 	/**
@@ -345,7 +362,18 @@ export class CacheManager {
 	}
 
 	async disconnect(): Promise<void> {
-		await this.#driver.disconnect?.();
+		// A connect still in flight finishes FIRST, so its subscription is one
+		// this teardown can see. Tearing down ahead of it left the handler to
+		// land afterwards, on a store nobody was tracking any more.
+		if (this.#connecting) await this.#connecting.catch(() => {});
+		try {
+			await this.#driver.disconnect?.();
+		} finally {
+			// Reset either way: a store that refused to close is not one that
+			// should silently skip its next `connect()`.
+			this.#connected = false;
+			this.#connecting = undefined;
+		}
 	}
 
 	async #readEntry<T>(prefixed: string): Promise<CacheEntry<T> | null> {
@@ -489,6 +517,7 @@ export class CacheManager {
 	async deleteMany(
 		keysOrOptions: string[] | DeleteManyOptions,
 	): Promise<boolean> {
+		await this.#whenConnected();
 		const keys = Array.isArray(keysOrOptions)
 			? keysOrOptions
 			: keysOrOptions.keys;
@@ -529,6 +558,7 @@ export class CacheManager {
 	 * window (bento `expire`). Without grace this is equivalent to a delete.
 	 */
 	async expire(keyOrOptions: string | ExpireOptions): Promise<boolean> {
+		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
 		const prefixed = this.#prefixKey(key);
@@ -549,9 +579,19 @@ export class CacheManager {
 		return this.#driver.delete(prefixed);
 	}
 
-	/** Clear the whole store (bento/Adonis `clear`). */
+	/**
+	 * Clear this cache — the whole store, or only this namespace's subtree.
+	 *
+	 * A namespaced view shares the driver, so this used to flush everything:
+	 * one tenant clearing its own cache emptied every other tenant's, from an
+	 * operation they are allowed to run. Upstream scopes it the same way, by
+	 * handing the driver the prefix.
+	 */
 	async clear(): Promise<void> {
-		await this.#driver.flush();
+		await this.#whenConnected();
+		// The separator is part of it: `tenant-a` must not take `tenant-abc`
+		// with it, and every key under this view is written `<prefix>:<key>`.
+		await this.#driver.flush(this.#prefix ? `${this.#prefix}:` : undefined);
 		this.#emit("cache:cleared", { store: this.#name });
 	}
 
@@ -564,6 +604,7 @@ export class CacheManager {
 		tags: string[],
 		ttlSeconds?: number,
 	): Promise<void> {
+		await this.#whenConnected();
 		await this.#writeValue(
 			this.#prefixKey(key),
 			value,
@@ -580,6 +621,7 @@ export class CacheManager {
 	async deleteByTag(
 		tagsOrOptions: string[] | DeleteByTagOptions,
 	): Promise<void> {
+		await this.#whenConnected();
 		const tags = Array.isArray(tagsOrOptions)
 			? tagsOrOptions
 			: tagsOrOptions.tags;
@@ -705,6 +747,7 @@ export class CacheManager {
 		b?: number,
 		c?: Factory<T>,
 	): Promise<T> {
+		await this.#whenConnected();
 		const o = this.#normalizeGetOrSet<T>(a, b, c);
 		const prefixed = this.#prefixKey(o.key);
 
