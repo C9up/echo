@@ -483,14 +483,14 @@ describe("echo > a tiered driver lets go of the bus", () => {
 
 		// The read still answers — an unreachable bus costs staleness, not
 		// every read — but it has tried.
-		expect(await cache.get("k")).toBeNull();
+		expect(await cache.get("k")).toBeUndefined();
 		expect(attempts).toBe(1);
 
-		expect(await cache.get("k")).toBeNull();
+		expect(await cache.get("k")).toBeUndefined();
 		expect(attempts).toBe(2);
 
 		// And once it succeeds, it stops trying.
-		expect(await cache.get("k")).toBeNull();
+		expect(await cache.get("k")).toBeUndefined();
 		expect(attempts).toBe(2);
 	});
 });

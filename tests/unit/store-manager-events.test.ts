@@ -117,7 +117,7 @@ describe("echo > operations across every built store", () => {
 
 		await manager.clearAll();
 
-		expect(await manager.use("primary").get("k")).toBeNull();
+		expect(await manager.use("primary").get("k")).toBeUndefined();
 	});
 
 	it("prunes and disconnects without complaint", async () => {

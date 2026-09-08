@@ -89,8 +89,8 @@ describe("echo failure paths > deleteByTag", () => {
 		await cache.set({ key: "b", value: 2, ttl: 60, tags: ["users"] });
 		await cache.set({ key: "c", value: 3, ttl: 60, tags: ["posts"] });
 		await cache.deleteByTag(["users"]);
-		expect(await cache.get("a")).toBeNull();
-		expect(await cache.get("b")).toBeNull();
+		expect(await cache.get("a")).toBeUndefined();
+		expect(await cache.get("b")).toBeUndefined();
 		expect(await cache.get("c")).toBe(3);
 	});
 });

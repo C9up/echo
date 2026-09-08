@@ -29,8 +29,15 @@ export type DriverFactory = () => CacheDriver;
 export interface StoreConfig {
 	driver: DriverFactory;
 	prefix?: string;
-	/** Default TTL in seconds. */
-	ttl?: number;
+	/**
+	 * How long an entry stays fresh. A number of seconds, or a duration —
+	 * `'30s'`, `'10m'`, `'1h'` — the way every other timing option here reads,
+	 * and the way upstream's config is written.
+	 *
+	 * It was the one option locked to `number`, so a config copied from the
+	 * documentation did not typecheck on the line most likely to be copied.
+	 */
+	ttl?: Duration;
 	grace?: Duration;
 	timeout?: Duration;
 	hardTimeout?: Duration;
@@ -39,6 +46,14 @@ export interface StoreConfig {
 
 export interface MultiStoreConfig {
 	default: string;
+	/**
+	 * The TTL every store inherits when it does not name its own.
+	 *
+	 * Upstream's configuration carries one, and copying a config that used it
+	 * silently fell back to the built-in default instead — a cache with a
+	 * different lifetime than the file says.
+	 */
+	ttl?: Duration;
 	/**
 	 * The stores this application can use, by name. Each is a {@link store}
 	 * builder — the shape a cache config takes — or the plain
@@ -224,7 +239,8 @@ export class CacheStoreManager {
 		const cfg = entryOf(declared);
 		const manager = new CacheManager(cfg.driver(), {
 			prefix: cfg.prefix,
-			ttl: cfg.ttl,
+			// The store's own, or the one every store inherits.
+			ttl: cfg.ttl ?? this.#config.ttl,
 			grace: cfg.grace,
 			timeout: cfg.timeout,
 			hardTimeout: cfg.hardTimeout,

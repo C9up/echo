@@ -97,8 +97,8 @@ describe("echo > CacheManager > tagging support detection", () => {
 			expect(await cache.get("b")).toBe(2);
 
 			await cache.flushTags(["news"]);
-			expect(await cache.get("a")).toBeNull();
-			expect(await cache.get("b")).toBeNull();
+			expect(await cache.get("a")).toBeUndefined();
+			expect(await cache.get("b")).toBeUndefined();
 			expect(await cache.get("c")).toBe(3); // tagged 'fr' only — preserved
 		} finally {
 			driver.destroy();

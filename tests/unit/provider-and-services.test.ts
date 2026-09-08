@@ -244,7 +244,7 @@ describe("echo > the test helper", () => {
 
 		// A shared driver between two tests is a test that passes because of
 		// the one before it.
-		expect(await second.cache.get("k")).toBeNull();
+		expect(await second.cache.get("k")).toBeUndefined();
 	});
 
 	it("takes the prefix, ttl, grace and name it was given", async () => {
@@ -292,7 +292,7 @@ describe("echo > the documented multi-store surface", () => {
 
 		expect(await cache.use("other").get({ key: "k" })).toBe(1);
 		// …and the default store is a different one, not the same object twice.
-		expect(await cache.get({ key: "k" })).toBeNull();
+		expect(await cache.get({ key: "k" })).toBeUndefined();
 
 		await provider.shutdown();
 	});

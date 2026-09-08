@@ -6,7 +6,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
-import { CacheStoreManager, drivers } from "../../src/StoreManager.js";
+import { CacheStoreManager, drivers, store } from "../../src/StoreManager.js";
 
 const cache = (): CacheManager => new CacheManager(new MemoryDriver());
 
@@ -90,8 +90,8 @@ describe("echo > store manager", () => {
 		await m.use("memory").set({ key: "k", value: 1 });
 		await m.use("other").set({ key: "k", value: 2 });
 		await m.clearAll();
-		expect(await m.use("memory").get({ key: "k" })).toBeNull();
-		expect(await m.use("other").get({ key: "k" })).toBeNull();
+		expect(await m.use("memory").get({ key: "k" })).toBeUndefined();
+		expect(await m.use("other").get({ key: "k" })).toBeUndefined();
 	});
 
 	it("disconnects every built store without throwing", async () => {
@@ -109,7 +109,36 @@ describe("echo > prune", () => {
 		await c.set({ key: "k", value: 1 });
 		vi.advanceTimersByTime(5_000);
 		await c.prune();
-		expect(await c.get({ key: "k" })).toBeNull();
+		expect(await c.get({ key: "k" })).toBeUndefined();
 		vi.useRealTimers();
+	});
+});
+
+describe("echo > the config shapes upstream documents", () => {
+	it("takes a duration string for a store's ttl", async () => {
+		// Every other timing option read a `Duration`; `ttl` was the one locked
+		// to `number`, so a config copied from the documentation failed to
+		// typecheck on the line most likely to be copied.
+		const manager = new CacheStoreManager({
+			default: "memory",
+			stores: { memory: store({ ttl: "30s" }).useL1Layer(drivers.memory()) },
+		});
+
+		await manager.use().set({ key: "k", value: 1 });
+
+		expect(await manager.use().get({ key: "k" })).toBe(1);
+	});
+
+	it("lets every store inherit a ttl declared once", async () => {
+		const manager = new CacheStoreManager({
+			default: "memory",
+			ttl: "1ms",
+			stores: { memory: store().useL1Layer(drivers.memory()) },
+		});
+
+		await manager.use().set({ key: "k", value: 1 });
+		await new Promise((resolve) => setTimeout(resolve, 5));
+
+		expect(await manager.use().get({ key: "k" })).toBeUndefined();
 	});
 });

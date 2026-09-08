@@ -112,8 +112,8 @@ describeRedis("echo RedisDriver against a live Redis", () => {
 
 		await d.deleteByTag(["posts"]);
 
-		expect(await d.get("post:1")).toBeNull();
-		expect(await d.get("post:2")).toBeNull();
+		expect(await d.get("post:1")).toBeUndefined();
+		expect(await d.get("post:2")).toBeUndefined();
 		// A different tag is untouched.
 		expect(await d.get("user:1")).toBe("ada");
 	});

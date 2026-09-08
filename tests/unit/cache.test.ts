@@ -15,14 +15,14 @@ describe("cache > MemoryDriver", () => {
 	});
 
 	it("returns null on cache miss", async () => {
-		expect(await cache.get("absent")).toBeNull();
+		expect(await cache.get("absent")).toBeUndefined();
 	});
 
 	it("respects TTL", async () => {
 		await cache.set("expiring", "x", 0.05); // 50 ms
 		expect(await cache.get("expiring")).toBe("x");
 		await new Promise((r) => setTimeout(r, 80));
-		expect(await cache.get("expiring")).toBeNull();
+		expect(await cache.get("expiring")).toBeUndefined();
 	});
 
 	it("delete returns true if entry existed", async () => {
@@ -35,8 +35,8 @@ describe("cache > MemoryDriver", () => {
 		await cache.set("a", 1);
 		await cache.set("b", 2);
 		await cache.clear();
-		expect(await cache.get("a")).toBeNull();
-		expect(await cache.get("b")).toBeNull();
+		expect(await cache.get("a")).toBeUndefined();
+		expect(await cache.get("b")).toBeUndefined();
 	});
 
 	it("has() reflects presence", async () => {

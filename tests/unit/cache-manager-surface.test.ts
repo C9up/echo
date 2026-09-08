@@ -44,7 +44,7 @@ describe("echo > reading a key", () => {
 	it("answers null with no default", async () => {
 		const { cache } = make();
 
-		expect(await cache.get("missing")).toBeNull();
+		expect(await cache.get("missing")).toBeUndefined();
 	});
 
 	it("emits a miss, then a hit", async () => {
@@ -112,14 +112,14 @@ describe("echo > the convenience reads and deletes", () => {
 		await cache.set("k", "v");
 
 		expect(await cache.pull("k")).toBe("v");
-		expect(await cache.get("k")).toBeNull();
+		expect(await cache.get("k")).toBeUndefined();
 	});
 
 	it("pull on a miss deletes nothing", async () => {
 		const { cache } = make();
 		const spy = vi.spyOn(cache, "delete");
 
-		expect(await cache.pull("missing")).toBeNull();
+		expect(await cache.pull("missing")).toBeUndefined();
 		expect(spy).not.toHaveBeenCalled();
 	});
 
@@ -139,7 +139,7 @@ describe("echo > the convenience reads and deletes", () => {
 		await cache.set("b", 2);
 
 		expect(await cache.deleteMany(["a", "b"])).toBe(true);
-		expect(await cache.get("a")).toBeNull();
+		expect(await cache.get("a")).toBeUndefined();
 
 		await cache.set("c", 3);
 		expect(await cache.deleteMany({ keys: ["c"] })).toBe(true);
@@ -235,7 +235,7 @@ describe("echo > namespaces", () => {
 
 		await tenantA.clear();
 
-		expect(await tenantA.get("inside")).toBeNull();
+		expect(await tenantA.get("inside")).toBeUndefined();
 		expect(await cache.get("outside")).toBe("keep");
 		expect(await tenantB.get("inside")).toBe("keep too");
 	});
@@ -259,7 +259,7 @@ describe("echo > namespaces", () => {
 
 		await cache.clear();
 
-		expect(await scoped.get("k")).toBeNull();
+		expect(await scoped.get("k")).toBeUndefined();
 	});
 });
 
@@ -270,11 +270,11 @@ describe("echo > tags", () => {
 		await cache.set({ key: "b", value: 2, tags: ["invoices"] });
 
 		await cache.deleteByTag(["invoices"]);
-		expect(await cache.get("a")).toBeNull();
+		expect(await cache.get("a")).toBeUndefined();
 
 		await cache.set({ key: "c", value: 3, tags: ["invoices"] });
 		await cache.deleteByTag({ tags: ["invoices"] });
-		expect(await cache.get("c")).toBeNull();
+		expect(await cache.get("c")).toBeUndefined();
 	});
 
 	it("flushTags is the same operation under its old name", async () => {
@@ -283,7 +283,7 @@ describe("echo > tags", () => {
 
 		await cache.flushTags(["invoices"]);
 
-		expect(await cache.get("a")).toBeNull();
+		expect(await cache.get("a")).toBeUndefined();
 	});
 });
 

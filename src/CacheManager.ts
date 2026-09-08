@@ -87,8 +87,13 @@ function withTimeout<T>(
 export interface CacheConfig {
 	driver?: string;
 	prefix?: string;
-	/** Default TTL in **seconds** (echo-native unit; see `duration.ts`). */
-	ttl?: number;
+	/**
+	 * How long an entry stays fresh: a number of SECONDS, or a
+	 * {@link Duration} — `'30s'`, `'10m'` — like every other timing option
+	 * here. It was the one locked to `number`, so a config copied from the
+	 * documentation failed to typecheck on the line most likely to be copied.
+	 */
+	ttl?: Duration;
 	/** Default grace period (stale-while-revalidate) as a {@link Duration}. */
 	grace?: Duration;
 	/** Default soft timeout for `getOrSet` (return stale if the factory is slower). */
@@ -168,7 +173,7 @@ export class CacheManager {
 	constructor(driver: CacheDriver, config?: CacheConfig, shared?: SharedState) {
 		this.#driver = driver;
 		this.#prefix = config?.prefix ?? "";
-		this.#defaultTtl = config?.ttl ?? 3600;
+		this.#defaultTtl = resolveTtlSeconds(config?.ttl, 3600);
 		this.#defaultGrace = config?.grace;
 		this.#defaultTimeout = config?.timeout;
 		this.#defaultHardTimeout = config?.hardTimeout;
@@ -418,11 +423,11 @@ export class CacheManager {
 
 	// ---- get -------------------------------------------------------------
 
-	get<T = unknown>(key: string): Promise<T | null>;
-	get<T = unknown>(options: GetOptions<T>): Promise<T | null>;
+	get<T = unknown>(key: string): Promise<T | undefined>;
+	get<T = unknown>(options: GetOptions<T>): Promise<T | undefined>;
 	async get<T = unknown>(
 		keyOrOptions: string | GetOptions<T>,
-	): Promise<T | null> {
+	): Promise<T | undefined> {
 		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
@@ -457,7 +462,12 @@ export class CacheManager {
 		if (defaultValue !== undefined) {
 			return defaultValue instanceof Function ? defaultValue() : defaultValue;
 		}
-		return null;
+		// UNDEFINED, as upstream answers. It returned `null`, so code written
+		// against the documented shape — `if (value === undefined)` — never
+		// matched a miss, silently. The driver boundary still speaks `null`,
+		// which is where the translation happens: a driver reports "no entry",
+		// and this reports "nothing cached".
+		return undefined;
 	}
 
 	// ---- set -------------------------------------------------------------
@@ -547,9 +557,10 @@ export class CacheManager {
 	}
 
 	/** Read a key and delete it in one step (bento `pull`). Returns `null` on miss. */
-	async pull<T = unknown>(key: string): Promise<T | null> {
+	async pull<T = unknown>(key: string): Promise<T | undefined> {
+		await this.#whenConnected();
 		const value = await this.get<T>(key);
-		if (value !== null) await this.delete(key);
+		if (value !== undefined) await this.delete(key);
 		return value;
 	}
 
