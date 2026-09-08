@@ -264,4 +264,26 @@ describe("echo > a tiered driver lets go of the bus", () => {
 
 		expect(released).toBe(2);
 	});
+
+	it("still serves reads when the bus cannot be reached", async () => {
+		// Connecting says the bus is down — that is the provider's to refuse —
+		// but a store whose peers are unreachable still answers. Staleness is
+		// the cost; refusing every read would be a far worse one.
+		const l1 = new MemoryDriver();
+		const tiered = new TieredDriver({
+			l1,
+			l2: new MemoryDriver(),
+			bus: {
+				publish() {},
+				async subscribe() {
+					throw new Error("no route to the bus");
+				},
+			},
+		});
+
+		await expect(tiered.connect()).rejects.toThrow("no route to the bus");
+
+		await tiered.set("k", "v", 30);
+		expect(await tiered.get("k")).toBe("v");
+	});
 });

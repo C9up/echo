@@ -245,13 +245,20 @@ describe("echo > the quasar cache bus", () => {
 		);
 	});
 
-	it("does not take the store down when the bus cannot be reached", async () => {
-		// A bus that is down costs staleness; throwing here would cost every
-		// cache read.
+	it("reports a bus it cannot reach instead of pretending to listen", async () => {
+		// This used to be fire-and-forget on the grounds that a bus which is
+		// down costs staleness while throwing would cost every cache read. Both
+		// halves still hold — they just belong to different callers now. The
+		// subscribe is a `connect()` the provider awaits in `ready()`, so it
+		// SAYS so; the reads are the store's, and they keep working (pinned in
+		// tiered-coherence.test.ts).
 		vi.doMock(SPECIFIER, () => {
 			throw new Error("Cannot find module");
 		});
 		const bus = (await load())();
-		expect(() => bus.subscribe(() => {})).not.toThrow();
+
+		await expect(bus.subscribe(() => {})).rejects.toThrow(
+			/@c9up\/quasar is not installed/,
+		);
 	});
 });
