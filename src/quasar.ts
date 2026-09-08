@@ -68,7 +68,17 @@ function isConnectionSource(value: unknown): value is ConnectionSource {
 /** The slice of quasar's manager a pub/sub bus needs. */
 interface PubSubSource {
 	publish(channel: string, message: string): unknown;
-	subscribe(channel: string, handler: (message: string) => void): unknown;
+	subscribe(
+		channel: string,
+		handler: (message: string) => void,
+		/**
+		 * How a failure is REPORTED. Quasar catches the Redis error, calls this
+		 * and resolves normally — so awaiting the call proves nothing, and
+		 * without it the tier believed it was subscribed while no handler was
+		 * installed.
+		 */
+		options?: { onError?: (error: unknown) => void },
+	): unknown;
 	/**
 	 * Optional, and NAMED when it is there: quasar stacks handlers per channel,
 	 * so dropping them all would silence whatever else the application listens
@@ -154,7 +164,7 @@ export function quasarBus(options?: {
 			const source = await manager();
 			await source.publish(channel, JSON.stringify(message));
 		},
-		subscribe(handler: (message: BusMessage) => void): void {
+		async subscribe(handler: (message: BusMessage) => void): Promise<void> {
 			const wrapper = (raw: string): void => {
 				try {
 					handler(JSON.parse(raw) as BusMessage);
@@ -162,19 +172,38 @@ export function quasarBus(options?: {
 					/* a malformed frame is not a reason to stop listening */
 				}
 			};
-			// Not awaited: `subscribe` is synchronous in the bus contract, and the
-			// socket opens on quasar's own schedule. A failure to reach Redis must
-			// not take down the store — a bus that is down costs staleness, and
-			// throwing here would cost every cache read.
-			opened.set(
-				handler,
-				manager()
-					.then((source) => source.subscribe(channel, wrapper))
-					.catch(() => {
-						/* reported by the first publish, which surfaces its error */
-					})
-					.then(() => wrapper),
-			);
+			// AWAITED, and a reported failure becomes a rejection.
+			//
+			// This used to be fire-and-forget with the rejection swallowed, and
+			// quasar catches the Redis error itself and resolves — so the tier
+			// believed it was subscribed while no handler was installed. Every
+			// instance then served its own stale L1 until the TTL ran out, with
+			// nothing anywhere to say the bus was down.
+			//
+			// The provider awaits this in `ready()`, so an unreachable bus is a
+			// failed boot rather than a deployment that looks healthy and is
+			// quietly incoherent.
+			const attempt = (async (): Promise<(raw: string) => void> => {
+				const source = await manager();
+				let reported: unknown;
+				await source.subscribe(channel, wrapper, {
+					onError: (error) => {
+						reported = error;
+					},
+				});
+				if (reported !== undefined) {
+					opened.delete(handler);
+					throw reported instanceof Error
+						? reported
+						: new Error(String(reported));
+				}
+				return wrapper;
+			})();
+			opened.set(handler, attempt);
+			// Forgotten on a direct rejection too, so a retry is not refused by
+			// bookkeeping for a subscription that never happened.
+			attempt.catch(() => opened.delete(handler));
+			await attempt;
 		},
 		async unsubscribe(handler: (message: BusMessage) => void): Promise<void> {
 			// The subscribe may still be opening the socket. Removing ahead of it

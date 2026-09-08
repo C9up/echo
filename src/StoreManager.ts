@@ -238,6 +238,10 @@ export class CacheStoreManager {
 		replay("cache:written");
 		replay("cache:deleted");
 		replay("cache:cleared");
+		// So `cache.use('other')` works on whichever store the provider
+		// published — upstream's manager is one object that both operates on
+		// the default store and reaches the named ones.
+		manager.belongsTo(this);
 		this.#built.set(store, manager);
 		return manager;
 	}
@@ -295,6 +299,17 @@ export class CacheStoreManager {
 	 * Call it from a shutdown hook. A store on an INJECTED client leaves that
 	 * client alone — echo did not open it.
 	 */
+	/**
+	 * Open what every BUILT store needs outside the process.
+	 *
+	 * Stores are created on first use, so this reaches the ones the
+	 * application has actually asked for — naming a Redis store in an
+	 * environment that runs on memory still opens nothing.
+	 */
+	async connectAll(): Promise<void> {
+		await Promise.all([...this.#built.values()].map((m) => m.connect()));
+	}
+
 	async disconnectAll(): Promise<void> {
 		await Promise.all([...this.#built.values()].map((m) => m.disconnect()));
 	}

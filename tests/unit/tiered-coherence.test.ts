@@ -66,6 +66,7 @@ describe("echo > a tiered driver on a bus that hears itself", () => {
 		const l2 = new MemoryDriver();
 		const { bus } = echoingBus();
 		const tiered = new TieredDriver({ l1, l2, bus });
+		await tiered.connect();
 
 		await tiered.set("k", "v", 60);
 		await settled();
@@ -82,6 +83,7 @@ describe("echo > a tiered driver on a bus that hears itself", () => {
 		const l2 = new MemoryDriver();
 		const { bus } = echoingBus();
 		const tiered = new TieredDriver({ l1, l2, bus });
+		await tiered.connect();
 		await tiered.set("k", "v", 60);
 		await settled();
 
@@ -103,6 +105,7 @@ describe("echo > a tiered driver on a bus that hears itself", () => {
 		const l2 = new MemoryDriver();
 		const { bus, seen } = echoingBus();
 		const tiered = new TieredDriver({ l1, l2, bus });
+		await tiered.connect();
 		await tiered.set("k", "v", 60);
 
 		await tiered.flush();
@@ -151,6 +154,7 @@ describe("echo > a tier that refuses", () => {
 		};
 		const { bus, seen } = echoingBus();
 		const tiered = new TieredDriver({ l1, l2: failing, bus });
+		await tiered.connect();
 
 		await expect(tiered.set("k", "v", 60)).rejects.toThrow(/L2 write refused/);
 
@@ -201,6 +205,9 @@ describe("echo > a tiered driver lets go of the bus", () => {
 			l2: new MemoryDriver(),
 			bus,
 		});
+		// Building one opens nothing — the provider connects in `ready()`.
+		expect(listeners()).toBe(0);
+		await tiered.connect();
 		expect(listeners()).toBe(1);
 
 		await tiered.disconnect();
@@ -217,6 +224,7 @@ describe("echo > a tiered driver lets go of the bus", () => {
 				l2: new MemoryDriver(),
 				bus,
 			});
+			await tiered.connect();
 			await tiered.disconnect();
 		}
 
@@ -249,6 +257,8 @@ describe("echo > a tiered driver lets go of the bus", () => {
 				},
 			},
 		});
+
+		await tiered.connect();
 
 		await expect(tiered.disconnect()).rejects.toThrow("already gone");
 

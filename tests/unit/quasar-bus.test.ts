@@ -112,6 +112,58 @@ describe("echo > the quasar cache bus", () => {
 		expect(seen).toEqual([message]);
 	});
 
+	it("turns a reported subscribe failure into a rejection", async () => {
+		// Quasar catches the Redis error, calls `onError` and RESOLVES — so
+		// awaiting the call proved nothing. The tier believed it was subscribed
+		// while no handler was installed, and every instance served its own
+		// stale L1 until the TTL, with nothing to say the bus was down.
+		const socket = pubsub();
+		socket.subscribe = vi.fn(
+			async (
+				_channel: string,
+				_handler: (raw: string) => void,
+				options?: { onError?: (error: unknown) => void },
+			) => {
+				options?.onError?.(new Error("no route to the bus"));
+			},
+		);
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+
+		await expect(bus.subscribe(() => {})).rejects.toThrow(
+			"no route to the bus",
+		);
+	});
+
+	it("lets a retry through after a failed subscribe", async () => {
+		let attempts = 0;
+		const socket = pubsub();
+		const succeed = socket.subscribe;
+		socket.subscribe = vi.fn(
+			async (
+				channel: string,
+				handler: (raw: string) => void,
+				options?: { onError?: (error: unknown) => void },
+			) => {
+				attempts += 1;
+				if (attempts === 1) {
+					options?.onError?.(new Error("no route to the bus"));
+					return;
+				}
+				await succeed(channel, handler);
+			},
+		);
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+		const handler = (): void => {};
+		await expect(bus.subscribe(handler)).rejects.toThrow();
+
+		await expect(bus.subscribe(handler)).resolves.toBeUndefined();
+		expect(socket.handlers.size).toBe(1);
+	});
+
 	it("removes its own listener, by name", async () => {
 		// Quasar keeps a `Set` of handlers per channel. An unnamed unsubscribe
 		// drops every listener on a connection the application shares with the

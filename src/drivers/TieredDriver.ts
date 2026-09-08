@@ -41,7 +41,17 @@ export interface BusMessage {
 /** Duck-typed pub/sub bus for cross-instance L1 invalidation (e.g. Redis pub/sub). */
 export interface CacheBus {
 	publish(message: BusMessage): void | Promise<void>;
-	subscribe(handler: (message: BusMessage) => void): void;
+	/**
+	 * Start listening for peer invalidations.
+	 *
+	 * AWAITED, and a rejection is an answer. A bus that reports its failure and
+	 * resolves anyway — which is what a Redis client shared with the rest of
+	 * the application does — left the tier believing it was subscribed while no
+	 * handler was installed: every instance then served its own stale L1 until
+	 * the TTL ran out, including for anything an application had cached about
+	 * who may do what.
+	 */
+	subscribe(handler: (message: BusMessage) => void): void | Promise<void>;
 	/**
 	 * Stop listening — the HANDLER names which subscription, because a bus is
 	 * shared: quasar keeps a `Set` per channel, so "drop everything here" would
@@ -133,7 +143,7 @@ export class TieredDriver implements TaggableDriver {
 		this.#l1 = options.l1;
 		this.#l2 = options.l2;
 		this.#bus = options.bus;
-		const onPeerMessage = (message: BusMessage): void => {
+		this.#onPeerMessage = (message: BusMessage): void => {
 			// Our own invalidation, come back round the bus. Acting on it would
 			// undo the write that sent it.
 			if (message.senderId === this.#id) return;
@@ -146,10 +156,26 @@ export class TieredDriver implements TaggableDriver {
 				this.#invalidate(key, () => this.#l1.delete(key));
 			}
 		};
-		if (this.#bus) {
-			this.#busHandler = onPeerMessage;
-			this.#bus.subscribe(onPeerMessage);
-		}
+	}
+
+	/** The listener this tier will install, built once in the constructor. */
+	readonly #onPeerMessage: (message: BusMessage) => void;
+
+	/**
+	 * Subscribe to the bus. Idempotent, and awaited by whoever readies the app.
+	 *
+	 * NOT done in the constructor: a store is built when the cache service is
+	 * published, which happens while the application boots — including under an
+	 * inspection that never shuts anything down. Opening the socket there left
+	 * a subscriber behind every time someone listed the routes.
+	 */
+	async connect(): Promise<void> {
+		if (!this.#bus || this.#busHandler) return;
+		await this.#bus.subscribe(this.#onPeerMessage);
+		// Recorded only once the bus has accepted it. Marked before, a failed
+		// subscribe left a handler this driver believed was installed and would
+		// later try to remove.
+		this.#busHandler = this.#onPeerMessage;
 	}
 
 	/**

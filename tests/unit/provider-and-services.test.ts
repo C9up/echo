@@ -9,7 +9,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import EchoProvider from "../../src/EchoProvider.js";
-import { drivers } from "../../src/StoreManager.js";
+import { drivers, store } from "../../src/StoreManager.js";
 import { getCache, setCache } from "../../src/services/main.js";
 import { createTestCache } from "../../src/testing/main.js";
 
@@ -126,9 +126,9 @@ describe("echo > the provider", () => {
 		const context = app({});
 		const provider = new EchoProvider(context);
 		provider.register();
-		await provider.ready();
+		await provider.boot();
 		const cache = getCache();
-		if (!cache) throw new Error("ready should have published a cache");
+		if (!cache) throw new Error("boot should have published a cache");
 		const released = vi.spyOn(cache, "disconnect");
 
 		await provider.shutdown();
@@ -144,12 +144,12 @@ describe("echo > the provider", () => {
 		// cache is a live app whose driver was closed underneath it.
 		const first = new EchoProvider(app({}));
 		first.register();
-		await first.ready();
+		await first.boot();
 		const mine = getCache();
 
 		const second = new EchoProvider(app({}));
 		second.register();
-		await second.ready();
+		await second.boot();
 		const theirs = getCache();
 		expect(theirs).not.toBe(mine);
 		const released = vi.spyOn(theirs as CacheManager, "disconnect");
@@ -163,18 +163,16 @@ describe("echo > the provider", () => {
 		expect(getCache()).toBeUndefined();
 	});
 
-	it("publishes the singleton when the application is ready", async () => {
+	it("publishes the singleton at boot, before the socket opens", async () => {
+		// The HTTP server listens BEFORE the providers are readied, so a cache
+		// published in `ready` left a window where a request could reach a
+		// controller and the accessor would throw. Upstream's own accessor
+		// resolves the manager on `app.booted()`, for the same reason.
 		const context = app({});
 		const provider = new EchoProvider(context);
 		provider.register();
 
-		// NOT at boot: `register`, `boot` and `start` all run during an
-		// inspection, and `shutdown` does not — so a tiered cache built there
-		// left a bus subscriber and a Redis connection behind a command that
-		// only meant to list routes.
-		expect(getCache()).toBeUndefined();
-
-		await provider.ready();
+		await provider.boot();
 
 		expect(getCache()).toBeInstanceOf(CacheManager);
 		await expect(provider.shutdown()).resolves.toBeUndefined();
@@ -262,5 +260,65 @@ describe("echo > the test helper", () => {
 
 		// An undisposed interval keeps the test process alive.
 		expect(() => one.dispose()).not.toThrow();
+	});
+});
+
+/**
+ * What the README tells an application to write, run as written.
+ *
+ * `cache.use('tiered')` is documented on the first page, and the provider
+ * bound the DEFAULT store — a `CacheManager`, which has no `use`. The example
+ * threw on the line after the one that works.
+ */
+describe("echo > the documented multi-store surface", () => {
+	function multiStore() {
+		return {
+			default: "memory",
+			stores: {
+				memory: store().useL1Layer(drivers.memory()),
+				other: store({ ttl: 60 }).useL1Layer(drivers.memory()),
+			},
+		};
+	}
+
+	it("reaches a named store through the published service", async () => {
+		const provider = new EchoProvider(app(multiStore()));
+		provider.register();
+		await provider.boot();
+
+		const cache = getCache();
+		if (!cache) throw new Error("boot should have published a cache");
+		await cache.use("other").set({ key: "k", value: 1 });
+
+		expect(await cache.use("other").get({ key: "k" })).toBe(1);
+		// …and the default store is a different one, not the same object twice.
+		expect(await cache.get({ key: "k" })).toBeNull();
+
+		await provider.shutdown();
+	});
+
+	it("names an unknown store rather than answering with the default", async () => {
+		const provider = new EchoProvider(app(multiStore()));
+		provider.register();
+		await provider.boot();
+		const cache = getCache();
+		if (!cache) throw new Error("boot should have published a cache");
+
+		expect(() => cache.use("nope")).toThrow(/unknown cache store/);
+
+		await provider.shutdown();
+	});
+
+	it("says what `use` means on a single-store configuration", async () => {
+		const provider = new EchoProvider(app({}));
+		provider.register();
+		await provider.boot();
+		const cache = getCache();
+		if (!cache) throw new Error("boot should have published a cache");
+
+		expect(cache.use()).toBe(cache);
+		expect(() => cache.use("tiered")).toThrow(/single store/);
+
+		await provider.shutdown();
 	});
 });

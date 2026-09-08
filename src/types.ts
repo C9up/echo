@@ -64,6 +64,19 @@ export interface CacheDriver {
 		options: DriverSetOptions,
 	): Promise<void>;
 	/**
+	 * Open whatever this driver needs OUTSIDE the process — a bus subscription,
+	 * a connection it owns.
+	 *
+	 * Separate from the constructor on purpose. Building a store is what
+	 * publishing the cache service does, and that happens while the application
+	 * boots, including under `ream inspect` — which never shuts anything down.
+	 * A driver that opened a socket to exist left one behind every time someone
+	 * listed the routes. This is called once the application is ready, and its
+	 * failure is the application's to refuse: a tiered store that never
+	 * subscribed serves stale L1 copies to everyone until their TTL.
+	 */
+	connect?(): Promise<void>;
+	/**
 	 * Drop entries this driver knows to be expired (bentocache `prune`). Only
 	 * stores that do not evict on their own need it.
 	 */

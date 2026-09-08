@@ -120,23 +120,37 @@ export default class EchoProvider {
 	#cache: CacheManager | undefined;
 
 	/**
-	 * Build the cache and publish it on `services/main` — in `ready`, not `boot`.
+	 * Publish the cache on `services/main`.
 	 *
-	 * Constructing it is not free: a tiered store SUBSCRIBES to its bus the
-	 * moment it exists, which opens a Redis connection. `register`, `boot` and
-	 * `start` all run during an inspection — a route listing, a codegen pass —
-	 * and `shutdown` does not, so a cache built there was a subscriber and a
-	 * connection left behind by a command that only meant to look.
+	 * At BOOT, matching upstream, whose own accessor resolves the manager on
+	 * `app.booted()`. It has to be here: the HTTP socket opens before the
+	 * providers are readied, so a cache published in `ready` left a window
+	 * where a request could reach a controller and the accessor would throw —
+	 * and a preload that actually uses the cache would fail outright.
 	 *
-	 * `ready` is the phase upstream reserves for exactly that, and the one an
-	 * inspection never reaches. `services/main` resolves lazily through a
-	 * proxy, so anything that USES the cache while serving still finds it; only
-	 * code that reaches for it during a preload's own module evaluation would
-	 * now be too early, and the accessor says so by name.
+	 * Building it opens nothing. A driver's external work lives behind
+	 * {@link CacheDriver.connect}, which {@link ready} awaits.
 	 */
-	async ready(): Promise<void> {
+	async boot(): Promise<void> {
 		this.#cache = await this.app.container.resolve<CacheManager>(CacheManager);
 		setCache(this.#cache);
+	}
+
+	/**
+	 * Open what the drivers need outside the process — a tiered store's bus.
+	 *
+	 * `ready` is the phase upstream reserves for operational effects, and the
+	 * one an inspection never reaches: `register`, `boot` and `start` all run
+	 * under `ream inspect`, and `shutdown` does not, so a subscription opened
+	 * any earlier was a Redis connection left behind by a command that only
+	 * meant to list the routes.
+	 *
+	 * A failure here fails the boot, deliberately. An instance whose bus never
+	 * subscribed keeps serving its own L1 copies of keys other instances have
+	 * already deleted, with nothing to say so.
+	 */
+	async ready(): Promise<void> {
+		await this.#cache?.connect();
 	}
 
 	/**

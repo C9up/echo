@@ -144,6 +144,15 @@ export class CacheManager {
 		"cache:cleared": new Set(),
 	};
 	#shared: SharedState;
+	/**
+	 * The store manager this one came from, when it did.
+	 *
+	 * What makes `cache.use('other')` work on the object the provider
+	 * publishes. Upstream's manager is ONE object that both operates on the
+	 * default store and reaches the named ones; binding the default store
+	 * alone made the first example in the README throw on its second line.
+	 */
+	#stores: { use(name?: string): CacheManager } | undefined;
 
 	constructor(driver: CacheDriver, config?: CacheConfig, shared?: SharedState) {
 		this.#driver = driver;
@@ -251,6 +260,38 @@ export class CacheManager {
 	 * the connection and other consumers may still be using it. Only a driver
 	 * that owns its resource implements the hook.
 	 */
+	/**
+	 * Reach a named store — or this one, when it is the only one.
+	 *
+	 * @throws when a name is given and this manager owns a single store: the
+	 *   configuration says which stores exist, and answering with the default
+	 *   would cache under a name nobody declared.
+	 */
+	use(name?: string): CacheManager {
+		if (this.#stores) return this.#stores.use(name);
+		if (name === undefined) return this;
+		throw new Error(
+			`Echo: cannot use the "${name}" store — this cache is configured with a single store. ` +
+				"Declare `{ default, stores }` in config/cache.ts to name several.",
+		);
+	}
+
+	/** @internal Called by `CacheStoreManager` on the store it builds. */
+	belongsTo(stores: { use(name?: string): CacheManager }): void {
+		this.#stores = stores;
+	}
+
+	/**
+	 * Open what the driver needs outside the process (a bus subscription).
+	 *
+	 * Awaited by whoever readies the application, and its failure is theirs to
+	 * refuse — a tiered store that never subscribed serves stale L1 copies to
+	 * everyone until their TTL.
+	 */
+	async connect(): Promise<void> {
+		await this.#driver.connect?.();
+	}
+
 	async disconnect(): Promise<void> {
 		await this.#driver.disconnect?.();
 	}

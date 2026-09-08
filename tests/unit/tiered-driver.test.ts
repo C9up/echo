@@ -330,7 +330,9 @@ describe("echo > peer invalidation over the bus", () => {
 		l1.entries.set("k", { value: "stale-copy", stale: false });
 		l2.entries.set("k", { value: "shared", stale: false });
 		const { bus: b, emit } = bus();
-		new TieredDriver({ l1, l2, bus: b });
+		// Listening is an EXTERNAL effect now: the provider opens it in
+		// `ready()`, so a driver built by hand has to be connected too.
+		await new TieredDriver({ l1, l2, bus: b }).connect();
 
 		emit({ type: "delete", keys: ["k"] });
 		await Promise.resolve();
@@ -344,7 +346,9 @@ describe("echo > peer invalidation over the bus", () => {
 		const l1 = new StubDriver();
 		const l2 = new StubDriver();
 		const { bus: b, emit } = bus();
-		new TieredDriver({ l1, l2, bus: b });
+		// Listening is an EXTERNAL effect now: the provider opens it in
+		// `ready()`, so a driver built by hand has to be connected too.
+		await new TieredDriver({ l1, l2, bus: b }).connect();
 
 		emit({ type: "clear", keys: [] });
 		await Promise.resolve();
@@ -403,7 +407,7 @@ describe("TieredDriver > an L1 that fails a peer invalidation", () => {
 				throw new Error("L1 is gone");
 			};
 			const { bus: b, emit } = bus();
-			new TieredDriver({ l1, l2: new MemoryDriver(), bus: b });
+			await new TieredDriver({ l1, l2: new MemoryDriver(), bus: b }).connect();
 
 			// Nobody awaits a bus callback, so these rejections had nowhere to
 			// go — and on a default Node that ends the process over a cache
