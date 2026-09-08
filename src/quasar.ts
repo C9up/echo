@@ -69,6 +69,12 @@ function isConnectionSource(value: unknown): value is ConnectionSource {
 interface PubSubSource {
 	publish(channel: string, message: string): unknown;
 	subscribe(channel: string, handler: (message: string) => void): unknown;
+	/**
+	 * Optional, and NAMED when it is there: quasar stacks handlers per channel,
+	 * so dropping them all would silence whatever else the application listens
+	 * to on the connection echo borrows.
+	 */
+	unsubscribe?(channel: string, handler?: (message: string) => void): unknown;
 }
 
 function isPubSubSource(value: unknown): value is PubSubSource {
@@ -120,6 +126,11 @@ export function quasarBus(options?: {
 }): CacheBus {
 	const channel = options?.channel ?? "echo::invalidate";
 	let ready: Promise<PubSubSource> | undefined;
+	/** Per subscriber, the wrapper actually registered — once it has been. */
+	const opened = new Map<
+		(message: BusMessage) => void,
+		Promise<(raw: string) => void>
+	>();
 
 	const manager = (): Promise<PubSubSource> => {
 		ready ??= loadQuasar(
@@ -144,23 +155,40 @@ export function quasarBus(options?: {
 			await source.publish(channel, JSON.stringify(message));
 		},
 		subscribe(handler: (message: BusMessage) => void): void {
+			const wrapper = (raw: string): void => {
+				try {
+					handler(JSON.parse(raw) as BusMessage);
+				} catch {
+					/* a malformed frame is not a reason to stop listening */
+				}
+			};
 			// Not awaited: `subscribe` is synchronous in the bus contract, and the
 			// socket opens on quasar's own schedule. A failure to reach Redis must
 			// not take down the store — a bus that is down costs staleness, and
 			// throwing here would cost every cache read.
-			void manager()
-				.then((source) =>
-					source.subscribe(channel, (raw: string) => {
-						try {
-							handler(JSON.parse(raw) as BusMessage);
-						} catch {
-							/* a malformed frame is not a reason to stop listening */
-						}
-					}),
-				)
-				.catch(() => {
-					/* reported by the first publish, which does surface its error */
-				});
+			opened.set(
+				handler,
+				manager()
+					.then((source) => source.subscribe(channel, wrapper))
+					.catch(() => {
+						/* reported by the first publish, which surfaces its error */
+					})
+					.then(() => wrapper),
+			);
+		},
+		async unsubscribe(handler: (message: BusMessage) => void): Promise<void> {
+			// The subscribe may still be opening the socket. Removing ahead of it
+			// takes nothing off and leaves the handler to land afterwards, on a
+			// bus nobody is tracking any more.
+			const pending = opened.get(handler);
+			if (pending === undefined) return;
+			opened.delete(handler);
+			const wrapper = await pending;
+			const source = await manager();
+			// NAMED. Quasar keeps a `Set` of handlers per channel, so an unnamed
+			// unsubscribe drops every listener on a connection the application
+			// shares with the cache.
+			await source.unsubscribe?.(channel, wrapper);
 		},
 	};
 }

@@ -116,16 +116,31 @@ export default class EchoProvider {
 		this.app.container.singleton("cache", cache);
 	}
 
-	/** The cache THIS provider booted — not whatever the module singleton holds. */
+	/** The cache THIS provider opened — not whatever the module singleton holds. */
 	#cache: CacheManager | undefined;
 
-	async boot(): Promise<void> {
+	/**
+	 * Build the cache and publish it on `services/main` — in `ready`, not `boot`.
+	 *
+	 * Constructing it is not free: a tiered store SUBSCRIBES to its bus the
+	 * moment it exists, which opens a Redis connection. `register`, `boot` and
+	 * `start` all run during an inspection — a route listing, a codegen pass —
+	 * and `shutdown` does not, so a cache built there was a subscriber and a
+	 * connection left behind by a command that only meant to look.
+	 *
+	 * `ready` is the phase upstream reserves for exactly that, and the one an
+	 * inspection never reaches. `services/main` resolves lazily through a
+	 * proxy, so anything that USES the cache while serving still finds it; only
+	 * code that reaches for it during a preload's own module evaluation would
+	 * now be too early, and the accessor says so by name.
+	 */
+	async ready(): Promise<void> {
 		this.#cache = await this.app.container.resolve<CacheManager>(CacheManager);
 		setCache(this.#cache);
 	}
 
 	/**
-	 * Release the cache the app booted.
+	 * Release the cache the app opened.
 	 *
 	 * The memory driver runs a sweep on a timer and the redis driver holds a
 	 * connection. Neither is released on its own, so across a dev reload or a

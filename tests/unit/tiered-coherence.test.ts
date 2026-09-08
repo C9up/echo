@@ -159,3 +159,99 @@ describe("echo > a tier that refuses", () => {
 		expect(seen).toHaveLength(0);
 	});
 });
+
+/**
+ * A bus that can be told to drop one listener, and reports how many it holds.
+ *
+ * `subscribe` returning nothing was the problem: the tiered driver had no way
+ * to let go, so every hot reload and every test left another handler on the
+ * bus, each holding an L1 nobody would ever read again and each acting on
+ * invalidations meant for a driver that no longer exists.
+ */
+function releasableBus(): {
+	bus: {
+		publish(m: BusMessage): void;
+		subscribe(h: (m: BusMessage) => void): void;
+		unsubscribe(h: (m: BusMessage) => void): void;
+	};
+	listeners: () => number;
+} {
+	const handlers = new Set<(m: BusMessage) => void>();
+	return {
+		bus: {
+			publish(message: BusMessage) {
+				for (const handler of handlers) handler(message);
+			},
+			subscribe(handler: (m: BusMessage) => void) {
+				handlers.add(handler);
+			},
+			unsubscribe(handler: (m: BusMessage) => void) {
+				handlers.delete(handler);
+			},
+		},
+		listeners: () => handlers.size,
+	};
+}
+
+describe("echo > a tiered driver lets go of the bus", () => {
+	it("unsubscribes on disconnect", async () => {
+		const { bus, listeners } = releasableBus();
+		const tiered = new TieredDriver({
+			l1: new MemoryDriver(),
+			l2: new MemoryDriver(),
+			bus,
+		});
+		expect(listeners()).toBe(1);
+
+		await tiered.disconnect();
+
+		expect(listeners()).toBe(0);
+	});
+
+	it("does not accumulate listeners across reloads", async () => {
+		// One process, several application lifetimes: a dev reload, a test file.
+		const { bus, listeners } = releasableBus();
+		for (let cycle = 0; cycle < 3; cycle += 1) {
+			const tiered = new TieredDriver({
+				l1: new MemoryDriver(),
+				l2: new MemoryDriver(),
+				bus,
+			});
+			await tiered.disconnect();
+		}
+
+		expect(listeners()).toBe(0);
+	});
+
+	it("still releases both layers when the bus refuses", async () => {
+		let released = 0;
+		const layer = (): CacheDriver => {
+			const inner = new MemoryDriver();
+			return {
+				get: (key) => inner.get(key),
+				set: (key, value, ttl) => inner.set(key, value, ttl),
+				delete: (key) => inner.delete(key),
+				flush: () => inner.flush(),
+				has: (key) => inner.has(key),
+				disconnect: async () => {
+					released += 1;
+				},
+			};
+		};
+		const tiered = new TieredDriver({
+			l1: layer(),
+			l2: layer(),
+			bus: {
+				publish() {},
+				subscribe() {},
+				unsubscribe() {
+					throw new Error("the bus is already gone");
+				},
+			},
+		});
+
+		await expect(tiered.disconnect()).rejects.toThrow("already gone");
+
+		expect(released).toBe(2);
+	});
+});

@@ -16,15 +16,24 @@ const SPECIFIER = "@c9up/quasar/services/main";
 function pubsub() {
 	const published: Array<[string, string]> = [];
 	const handlers = new Map<string, (raw: string) => void>();
+	/** Every `unsubscribe`, so a test can see WHAT was taken off. */
+	const removed: Array<[string, ((raw: string) => void) | undefined]> = [];
 	return {
 		published,
 		handlers,
+		removed,
 		publish: vi.fn(async (channel: string, message: string) => {
 			published.push([channel, message]);
 		}),
 		subscribe: vi.fn(
 			async (channel: string, handler: (raw: string) => void) => {
 				handlers.set(channel, handler);
+			},
+		),
+		unsubscribe: vi.fn(
+			async (channel: string, handler?: (raw: string) => void) => {
+				removed.push([channel, handler]);
+				handlers.delete(channel);
 			},
 		),
 	};
@@ -38,12 +47,14 @@ const mockQuasar = (shape: {
 	connection?: unknown;
 	publish?: unknown;
 	subscribe?: unknown;
+	unsubscribe?: unknown;
 	default?: unknown;
 }) => {
 	vi.doMock(SPECIFIER, () => ({
 		connection: shape.connection,
 		publish: shape.publish,
 		subscribe: shape.subscribe,
+		unsubscribe: shape.unsubscribe,
 		default: shape.default,
 	}));
 };
@@ -99,6 +110,40 @@ describe("echo > the quasar cache bus", () => {
 
 		socket.handlers.get("echo::invalidate")?.(JSON.stringify(message));
 		expect(seen).toEqual([message]);
+	});
+
+	it("removes its own listener, by name", async () => {
+		// Quasar keeps a `Set` of handlers per channel. An unnamed unsubscribe
+		// drops every listener on a connection the application shares with the
+		// cache — the sessions and the queues go with it.
+		const socket = pubsub();
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+		const handler = (): void => {};
+		bus.subscribe(handler);
+		await vi.waitFor(() => expect(socket.handlers.size).toBe(1));
+		const registered = socket.handlers.get("echo::invalidate");
+
+		await bus.unsubscribe?.(handler);
+
+		expect(socket.removed).toEqual([["echo::invalidate", registered]]);
+	});
+
+	it("waits for a subscribe still opening before removing it", async () => {
+		// The socket opens on quasar's own schedule. Removing ahead of it takes
+		// nothing off and leaves the handler to land afterwards, on a bus
+		// nobody is tracking any more.
+		const socket = pubsub();
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+		const handler = (): void => {};
+		bus.subscribe(handler);
+		await bus.unsubscribe?.(handler);
+
+		expect(socket.handlers.size).toBe(0);
+		expect(socket.removed).toHaveLength(1);
 	});
 
 	it("keeps listening after a malformed frame", async () => {

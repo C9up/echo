@@ -126,9 +126,9 @@ describe("echo > the provider", () => {
 		const context = app({});
 		const provider = new EchoProvider(context);
 		provider.register();
-		await provider.boot();
+		await provider.ready();
 		const cache = getCache();
-		if (!cache) throw new Error("boot should have published a cache");
+		if (!cache) throw new Error("ready should have published a cache");
 		const released = vi.spyOn(cache, "disconnect");
 
 		await provider.shutdown();
@@ -144,12 +144,12 @@ describe("echo > the provider", () => {
 		// cache is a live app whose driver was closed underneath it.
 		const first = new EchoProvider(app({}));
 		first.register();
-		await first.boot();
+		await first.ready();
 		const mine = getCache();
 
 		const second = new EchoProvider(app({}));
 		second.register();
-		await second.boot();
+		await second.ready();
 		const theirs = getCache();
 		expect(theirs).not.toBe(mine);
 		const released = vi.spyOn(theirs as CacheManager, "disconnect");
@@ -163,12 +163,18 @@ describe("echo > the provider", () => {
 		expect(getCache()).toBeUndefined();
 	});
 
-	it("publishes the singleton at boot", async () => {
+	it("publishes the singleton when the application is ready", async () => {
 		const context = app({});
 		const provider = new EchoProvider(context);
 		provider.register();
 
-		await provider.boot();
+		// NOT at boot: `register`, `boot` and `start` all run during an
+		// inspection, and `shutdown` does not — so a tiered cache built there
+		// left a bus subscriber and a Redis connection behind a command that
+		// only meant to list routes.
+		expect(getCache()).toBeUndefined();
+
+		await provider.ready();
 
 		expect(getCache()).toBeInstanceOf(CacheManager);
 		await expect(provider.shutdown()).resolves.toBeUndefined();

@@ -42,6 +42,20 @@ export interface BusMessage {
 export interface CacheBus {
 	publish(message: BusMessage): void | Promise<void>;
 	subscribe(handler: (message: BusMessage) => void): void;
+	/**
+	 * Stop listening — the HANDLER names which subscription, because a bus is
+	 * shared: quasar keeps a `Set` per channel, so "drop everything here" would
+	 * silence whatever else the application listens to on the connection the
+	 * cache borrows.
+	 *
+	 * There was no way to stop at all, so every hot reload and every test left
+	 * another handler on the bus: each holding an L1 nobody would read again,
+	 * and each acting on invalidations meant for a driver that no longer
+	 * exists. Optional, so a bus written against the old contract still works —
+	 * it just leaks, and now that is the bus's omission rather than a gap in
+	 * the contract.
+	 */
+	unsubscribe?(handler: (message: BusMessage) => void): void | Promise<void>;
 }
 
 export interface TieredDriverOptions {
@@ -110,6 +124,8 @@ export class TieredDriver implements TaggableDriver {
 	#l1: CacheDriver;
 	#l2: CacheDriver;
 	#bus: CacheBus | undefined;
+	/** The listener on the bus, kept so `disconnect` can name it again. */
+	#busHandler: ((message: BusMessage) => void) | undefined;
 	/** This tier, as a bus sender. */
 	readonly #id = crypto.randomUUID();
 
@@ -117,7 +133,7 @@ export class TieredDriver implements TaggableDriver {
 		this.#l1 = options.l1;
 		this.#l2 = options.l2;
 		this.#bus = options.bus;
-		this.#bus?.subscribe((message) => {
+		const onPeerMessage = (message: BusMessage): void => {
 			// Our own invalidation, come back round the bus. Acting on it would
 			// undo the write that sent it.
 			if (message.senderId === this.#id) return;
@@ -129,7 +145,11 @@ export class TieredDriver implements TaggableDriver {
 			for (const key of message.keys) {
 				this.#invalidate(key, () => this.#l1.delete(key));
 			}
-		});
+		};
+		if (this.#bus) {
+			this.#busHandler = onPeerMessage;
+			this.#bus.subscribe(onPeerMessage);
+		}
 	}
 
 	/**
@@ -286,13 +306,21 @@ export class TieredDriver implements TaggableDriver {
 		if (!l2.ok) throw l2.error;
 	}
 
-	/** Release both layers (bentocache `disconnect`). */
+	/** Release the bus and both layers (bentocache `disconnect`). */
 	async disconnect(): Promise<void> {
-		// Both are released even when the first refuses: a tier left connected
-		// because its neighbour threw is a socket nobody closes.
+		// All three are released even when one refuses: a tier left connected
+		// because its neighbour threw is a socket nobody closes, and a listener
+		// left on the bus is an L1 nobody will read acting on invalidations for
+		// a driver that no longer exists.
+		const handler = this.#busHandler;
+		this.#busHandler = undefined;
+		const bus = await settle(async () =>
+			handler ? this.#bus?.unsubscribe?.(handler) : undefined,
+		);
 		const l1 = await settle(async () => this.#l1.disconnect?.());
 		const l2 = await settle(async () => this.#l2.disconnect?.());
 		if (!l1.ok) throw l1.error;
 		if (!l2.ok) throw l2.error;
+		if (!bus.ok) throw bus.error;
 	}
 }
