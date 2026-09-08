@@ -211,13 +211,16 @@ export function quasarBus(options?: {
 			// bus nobody is tracking any more.
 			const pending = opened.get(handler);
 			if (pending === undefined) return;
-			opened.delete(handler);
 			const wrapper = await pending;
 			const source = await manager();
 			// NAMED. Quasar keeps a `Set` of handlers per channel, so an unnamed
 			// unsubscribe drops every listener on a connection the application
 			// shares with the cache.
 			await source.unsubscribe?.(channel, wrapper);
+			// Forgotten LAST. Dropped before the call, a refusal left a live
+			// listener nothing could name again — neither to retry it nor to
+			// remove it at a second shutdown.
+			opened.delete(handler);
 		},
 	};
 }

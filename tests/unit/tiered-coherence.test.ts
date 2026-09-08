@@ -179,14 +179,20 @@ function releasableBus(): {
 		unsubscribe(h: (m: BusMessage) => void): void;
 	};
 	listeners: () => number;
+	subscribes: () => number;
 } {
 	const handlers = new Set<(m: BusMessage) => void>();
+	// Counted per CALL, not per distinct handler: a real bus registers a fresh
+	// wrapper each time it is asked, so a `Set` of the caller's handler would
+	// hide a second subscription behind the first.
+	let subscribes = 0;
 	return {
 		bus: {
 			publish(message: BusMessage) {
 				for (const handler of handlers) handler(message);
 			},
 			subscribe(handler: (m: BusMessage) => void) {
+				subscribes += 1;
 				handlers.add(handler);
 			},
 			unsubscribe(handler: (m: BusMessage) => void) {
@@ -194,6 +200,7 @@ function releasableBus(): {
 			},
 		},
 		listeners: () => handlers.size,
+		subscribes: () => subscribes,
 	};
 }
 
@@ -285,5 +292,53 @@ describe("echo > a tiered driver lets go of the bus", () => {
 
 		await tiered.set("k", "v", 30);
 		expect(await tiered.get("k")).toBe("v");
+	});
+
+	it("subscribes once for two concurrent connects", async () => {
+		// `connect()` says it is idempotent, and both callers saw an empty
+		// handler before the first await resolved — so two subscriptions went
+		// on, and only one came off.
+		const { bus, listeners, subscribes } = releasableBus();
+		const tiered = new TieredDriver({
+			l1: new MemoryDriver(),
+			l2: new MemoryDriver(),
+			bus,
+		});
+
+		await Promise.all([tiered.connect(), tiered.connect()]);
+
+		expect(subscribes()).toBe(1);
+		expect(listeners()).toBe(1);
+		await tiered.disconnect();
+		expect(listeners()).toBe(0);
+	});
+
+	it("keeps a subscription the bus refused to remove", async () => {
+		// The handler was forgotten before the bus was asked. A rejecting
+		// unsubscribe then left a live listener nothing could name again — not
+		// to retry it, not to remove it at a second shutdown.
+		const handlers = new Set<(m: BusMessage) => void>();
+		let refuse = true;
+		const tiered = new TieredDriver({
+			l1: new MemoryDriver(),
+			l2: new MemoryDriver(),
+			bus: {
+				publish() {},
+				subscribe(handler: (m: BusMessage) => void) {
+					handlers.add(handler);
+				},
+				unsubscribe(handler: (m: BusMessage) => void) {
+					if (refuse) throw new Error("the bus is busy");
+					handlers.delete(handler);
+				},
+			},
+		});
+		await tiered.connect();
+
+		await expect(tiered.disconnect()).rejects.toThrow("busy");
+
+		refuse = false;
+		await tiered.disconnect();
+		expect(handlers.size).toBe(0);
 	});
 });

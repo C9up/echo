@@ -120,6 +120,13 @@ interface NormalizedGetOrSet<T> {
 	onFactoryError?: (error: FactoryError) => void;
 }
 
+/** The slice of `CacheStoreManager` a store it built needs to reach back into. */
+export interface StoreFacade {
+	use(name?: string): CacheManager;
+	connectAll(): Promise<void>;
+	disconnectAll(): Promise<void>;
+}
+
 export class CacheManager {
 	#driver: CacheDriver;
 	#prefix: string;
@@ -152,7 +159,9 @@ export class CacheManager {
 	 * default store and reaches the named ones; binding the default store
 	 * alone made the first example in the README throw on its second line.
 	 */
-	#stores: { use(name?: string): CacheManager } | undefined;
+	#stores: StoreFacade | undefined;
+	/** A connect in flight or already settled, so it happens once. */
+	#connecting: Promise<void> | undefined;
 
 	constructor(driver: CacheDriver, config?: CacheConfig, shared?: SharedState) {
 		this.#driver = driver;
@@ -277,7 +286,7 @@ export class CacheManager {
 	}
 
 	/** @internal Called by `CacheStoreManager` on the store it builds. */
-	belongsTo(stores: { use(name?: string): CacheManager }): void {
+	belongsTo(stores: StoreFacade): void {
 		this.#stores = stores;
 	}
 
@@ -289,7 +298,50 @@ export class CacheManager {
 	 * everyone until their TTL.
 	 */
 	async connect(): Promise<void> {
-		await this.#driver.connect?.();
+		// Once. Two callers — the provider readying, and the first operation on
+		// a store built after that — must not open two subscriptions.
+		this.#connecting ??= (async () => {
+			await this.#driver.connect?.();
+		})();
+		try {
+			await this.#connecting;
+		} catch (error) {
+			// Forgotten, so a later call gets to try again rather than replaying
+			// the same rejection for the life of the process.
+			this.#connecting = undefined;
+			throw error;
+		}
+	}
+
+	/**
+	 * Wait for a connect ALREADY under way, and let its failure pass.
+	 *
+	 * A store built after the application was ready connects on its way out of
+	 * `use()`, and its first operation must not race that. The failure is not
+	 * this caller's to raise: the provider refuses the boot when the bus cannot
+	 * be reached, and after that an unreachable bus costs staleness — refusing
+	 * every read would cost far more.
+	 */
+	async #whenConnected(): Promise<void> {
+		if (this.#connecting) await this.#connecting.catch(() => {});
+	}
+
+	/**
+	 * Open every store this cache can reach, the named ones included.
+	 *
+	 * `connect()` alone reaches the DEFAULT store, which is what the provider
+	 * publishes — so a named tiered store declared beside it never subscribed,
+	 * and its L1 kept serving copies of keys other instances had deleted.
+	 */
+	async connectAll(): Promise<void> {
+		if (this.#stores) return this.#stores.connectAll();
+		await this.connect();
+	}
+
+	/** Release every store this cache can reach (bentocache `disconnectAll`). */
+	async disconnectAll(): Promise<void> {
+		if (this.#stores) return this.#stores.disconnectAll();
+		await this.disconnect();
 	}
 
 	async disconnect(): Promise<void> {
@@ -343,6 +395,7 @@ export class CacheManager {
 	async get<T = unknown>(
 		keyOrOptions: string | GetOptions<T>,
 	): Promise<T | null> {
+		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
 		const graceSeconds =
@@ -388,6 +441,7 @@ export class CacheManager {
 		value?: unknown,
 		ttlSeconds?: number,
 	): Promise<void> {
+		await this.#whenConnected();
 		let key: string;
 		let val: unknown;
 		let ttl: number;
@@ -423,6 +477,7 @@ export class CacheManager {
 	delete(key: string): Promise<boolean>;
 	delete(options: DeleteOptions): Promise<boolean>;
 	async delete(keyOrOptions: string | DeleteOptions): Promise<boolean> {
+		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
 		const deleted = await this.#driver.delete(this.#prefixKey(key));
@@ -449,6 +504,7 @@ export class CacheManager {
 	has(key: string): Promise<boolean>;
 	has(options: HasOptions): Promise<boolean>;
 	async has(keyOrOptions: string | HasOptions): Promise<boolean> {
+		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
 		return this.#driver.has(this.#prefixKey(key));

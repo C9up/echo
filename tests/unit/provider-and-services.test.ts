@@ -321,4 +321,85 @@ describe("echo > the documented multi-store surface", () => {
 
 		await provider.shutdown();
 	});
+
+	it("connects every store it has built, not just the default", async () => {
+		// `ready()` reached the default store alone, so a named tiered store
+		// declared beside it never subscribed: its L1 kept serving copies of
+		// keys other instances had already deleted, with nothing to say so.
+		const opened: string[] = [];
+		const closed: string[] = [];
+		const watching = (name: string) => () => ({
+			get: async () => null,
+			set: async () => {},
+			delete: async () => false,
+			flush: async () => {},
+			has: async () => false,
+			connect: async () => {
+				opened.push(name);
+			},
+			disconnect: async () => {
+				closed.push(name);
+			},
+		});
+		const provider = new EchoProvider(
+			app({
+				default: "one",
+				stores: {
+					one: store().useL1Layer(watching("one")),
+					two: store().useL1Layer(watching("two")),
+				},
+			}),
+		);
+		provider.register();
+		await provider.boot();
+		const cache = getCache();
+		if (!cache) throw new Error("boot should have published a cache");
+		// A preload reached for the named store before the app was ready.
+		cache.use("two");
+
+		await provider.ready();
+
+		expect(opened.sort()).toEqual(["one", "two"]);
+
+		await provider.shutdown();
+		expect(closed.sort()).toEqual(["one", "two"]);
+	});
+
+	it("connects a store built after the application was ready", async () => {
+		// Stores are created on first use, so one first touched by a request
+		// is created after `ready()` has already run.
+		const opened: string[] = [];
+		const watching = (name: string) => () => ({
+			get: async () => null,
+			set: async () => {},
+			delete: async () => false,
+			flush: async () => {},
+			has: async () => false,
+			connect: async () => {
+				opened.push(name);
+			},
+			disconnect: async () => {},
+		});
+		const provider = new EchoProvider(
+			app({
+				default: "one",
+				stores: {
+					one: store().useL1Layer(watching("one")),
+					late: store().useL1Layer(watching("late")),
+				},
+			}),
+		);
+		provider.register();
+		await provider.boot();
+		await provider.ready();
+		expect(opened).toEqual(["one"]);
+
+		const cache = getCache();
+		if (!cache) throw new Error("boot should have published a cache");
+		await cache.use("late").get({ key: "k" });
+
+		expect(opened.sort()).toEqual(["late", "one"]);
+
+		await provider.shutdown();
+	});
 });

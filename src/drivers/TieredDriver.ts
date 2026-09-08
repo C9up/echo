@@ -160,6 +160,8 @@ export class TieredDriver implements TaggableDriver {
 
 	/** The listener this tier will install, built once in the constructor. */
 	readonly #onPeerMessage: (message: BusMessage) => void;
+	/** A subscribe in flight, so two callers do not open two. */
+	#connecting: Promise<void> | undefined;
 
 	/**
 	 * Subscribe to the bus. Idempotent, and awaited by whoever readies the app.
@@ -171,11 +173,26 @@ export class TieredDriver implements TaggableDriver {
 	 */
 	async connect(): Promise<void> {
 		if (!this.#bus || this.#busHandler) return;
-		await this.#bus.subscribe(this.#onPeerMessage);
-		// Recorded only once the bus has accepted it. Marked before, a failed
-		// subscribe left a handler this driver believed was installed and would
-		// later try to remove.
-		this.#busHandler = this.#onPeerMessage;
+		// SINGLE-FLIGHT. Two callers — the provider readying and the first
+		// operation on a store built after that — both saw an empty handler
+		// before the first `await` resolved, so both subscribed and only one
+		// came off. `#busHandler` is set after the await, which is exactly the
+		// window; the promise closes it.
+		const bus = this.#bus;
+		this.#connecting ??= (async () => {
+			await bus.subscribe(this.#onPeerMessage);
+			// Recorded only once the bus has accepted it. Marked before, a
+			// failed subscribe left a handler this driver believed was
+			// installed and would later try to remove.
+			this.#busHandler = this.#onPeerMessage;
+		})();
+		try {
+			await this.#connecting;
+		} finally {
+			// Cleared either way: a failure must be retryable, and a success
+			// has `#busHandler` to say so.
+			this.#connecting = undefined;
+		}
 	}
 
 	/**
@@ -338,11 +355,15 @@ export class TieredDriver implements TaggableDriver {
 		// because its neighbour threw is a socket nobody closes, and a listener
 		// left on the bus is an L1 nobody will read acting on invalidations for
 		// a driver that no longer exists.
+		// Forgotten only once the bus has accepted its removal. Cleared first, a
+		// rejecting unsubscribe left a live listener nothing could name again —
+		// not to retry it, not to remove it at a second shutdown.
 		const handler = this.#busHandler;
-		this.#busHandler = undefined;
-		const bus = await settle(async () =>
-			handler ? this.#bus?.unsubscribe?.(handler) : undefined,
-		);
+		const bus = await settle(async () => {
+			if (!handler) return;
+			await this.#bus?.unsubscribe?.(handler);
+			this.#busHandler = undefined;
+		});
 		const l1 = await settle(async () => this.#l1.disconnect?.());
 		const l2 = await settle(async () => this.#l2.disconnect?.());
 		if (!l1.ok) throw l1.error;

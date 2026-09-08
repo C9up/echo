@@ -150,7 +150,7 @@ export default class EchoProvider {
 	 * already deleted, with nothing to say so.
 	 */
 	async ready(): Promise<void> {
-		await this.#cache?.connect();
+		await this.#cache?.connectAll();
 	}
 
 	/**
@@ -162,7 +162,7 @@ export default class EchoProvider {
 	 */
 	async shutdown(): Promise<void> {
 		if (!this.#cache) return;
-		await this.#cache.disconnect();
+		await this.#cache.disconnectAll();
 		// Two applications can share a process — parallel tests, a hot reload.
 		// The module singleton holds whichever booted last, so it is only ours
 		// to clear while it still points at the cache this provider booted.

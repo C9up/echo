@@ -183,6 +183,13 @@ export const drivers = {
 export class CacheStoreManager {
 	#config: MultiStoreConfig;
 	#built: Map<string, CacheManager> = new Map();
+	/**
+	 * Whether the application has been readied.
+	 *
+	 * Stores are created on first use, so one first touched by a request is
+	 * created AFTER `ready()` has run — and nothing would have connected it.
+	 */
+	#connected = false;
 	// Held here as well as on each store, so a listener registered before a
 	// store is first used still reaches it.
 	readonly #listeners: {
@@ -243,6 +250,12 @@ export class CacheStoreManager {
 		// the default store and reaches the named ones.
 		manager.belongsTo(this);
 		this.#built.set(store, manager);
+		// Built after the application was readied: connect it now rather than
+		// leave it the only store on no bus. `use()` is synchronous — upstream's
+		// is too, and the README chains off it — so the manager's own
+		// operations wait for this, and its failure costs staleness rather than
+		// every read.
+		if (this.#connected) manager.connect().catch(() => {});
 		return manager;
 	}
 
@@ -307,10 +320,15 @@ export class CacheStoreManager {
 	 * environment that runs on memory still opens nothing.
 	 */
 	async connectAll(): Promise<void> {
+		// Set FIRST, so a store built while this is in flight connects itself
+		// rather than being missed by a walk that had already listed the built
+		// ones.
+		this.#connected = true;
 		await Promise.all([...this.#built.values()].map((m) => m.connect()));
 	}
 
 	async disconnectAll(): Promise<void> {
+		this.#connected = false;
 		await Promise.all([...this.#built.values()].map((m) => m.disconnect()));
 	}
 }

@@ -164,6 +164,32 @@ describe("echo > the quasar cache bus", () => {
 		expect(socket.handlers.size).toBe(1);
 	});
 
+	it("keeps a listener the client refused to remove", async () => {
+		// The record was dropped before the client was asked, so a refusal left
+		// a live listener nothing could name again — neither to retry nor to
+		// remove at a second shutdown.
+		const socket = pubsub();
+		let refuse = true;
+		const accepting = socket.unsubscribe;
+		socket.unsubscribe = vi.fn(
+			async (channel: string, handler?: (raw: string) => void) => {
+				if (refuse) throw new Error("the connection is busy");
+				await accepting(channel, handler);
+			},
+		);
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+		const handler = (): void => {};
+		await bus.subscribe(handler);
+
+		await expect(bus.unsubscribe?.(handler)).rejects.toThrow("busy");
+
+		refuse = false;
+		await bus.unsubscribe?.(handler);
+		expect(socket.handlers.size).toBe(0);
+	});
+
 	it("removes its own listener, by name", async () => {
 		// Quasar keeps a `Set` of handlers per channel. An unnamed unsubscribe
 		// drops every listener on a connection the application shares with the
