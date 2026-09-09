@@ -112,8 +112,11 @@ describeRedis("echo RedisDriver against a live Redis", () => {
 
 		await d.deleteByTag(["posts"]);
 
-		expect(await d.get("post:1")).toBeUndefined();
-		expect(await d.get("post:2")).toBeUndefined();
+		// `null`, not `undefined`: this is the DRIVER boundary, where "no entry"
+		// is null. The manager is what translates that into the `undefined` a
+		// caller sees — the sibling expiry test above asserts the same way.
+		expect(await d.get("post:1")).toBeNull();
+		expect(await d.get("post:2")).toBeNull();
 		// A different tag is untouched.
 		expect(await d.get("user:1")).toBe("ada");
 	});
