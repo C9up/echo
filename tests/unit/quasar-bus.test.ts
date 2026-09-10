@@ -26,8 +26,17 @@ function pubsub() {
 			published.push([channel, message]);
 		}),
 		subscribe: vi.fn(
-			async (channel: string, handler: (raw: string) => void) => {
+			async (
+				channel: string,
+				handler: (raw: string) => void,
+				options?: { onSubscription?: (count: number) => void },
+			) => {
 				handlers.set(channel, handler);
+				// Real quasar announces the count once the channel is live, and
+				// that callback is now the success signal the bridge waits on —
+				// a double that stays silent models a subscription that never
+				// completes.
+				options?.onSubscription?.(1);
 			},
 		),
 		unsubscribe: vi.fn(
@@ -113,16 +122,20 @@ describe("echo > the quasar cache bus", () => {
 	});
 
 	it("turns a reported subscribe failure into a rejection", async () => {
-		// Quasar catches the Redis error, calls `onError` and RESOLVES — so
-		// awaiting the call proved nothing. The tier believed it was subscribed
-		// while no handler was installed, and every instance served its own
-		// stale L1 until the TTL, with nothing to say the bus was down.
+		// Quasar reports the Redis error through `onError` rather than
+		// rejecting, so the bus waits on the callbacks. Without that, the tier
+		// believed it was subscribed while no handler was installed, and every
+		// instance served its own stale L1 until the TTL, with nothing to say
+		// the bus was down.
 		const socket = pubsub();
 		socket.subscribe = vi.fn(
 			async (
 				_channel: string,
 				_handler: (raw: string) => void,
-				options?: { onError?: (error: unknown) => void },
+				options?: {
+					onSubscription?: (count: number) => void;
+					onError?: (error: unknown) => void;
+				},
 			) => {
 				options?.onError?.(new Error("no route to the bus"));
 			},
@@ -144,14 +157,17 @@ describe("echo > the quasar cache bus", () => {
 			async (
 				channel: string,
 				handler: (raw: string) => void,
-				options?: { onError?: (error: unknown) => void },
+				options?: {
+					onSubscription?: (count: number) => void;
+					onError?: (error: unknown) => void;
+				},
 			) => {
 				attempts += 1;
 				if (attempts === 1) {
 					options?.onError?.(new Error("no route to the bus"));
 					return;
 				}
-				await succeed(channel, handler);
+				await succeed(channel, handler, options);
 			},
 		);
 		mockQuasar({ default: { connection: () => socket } });

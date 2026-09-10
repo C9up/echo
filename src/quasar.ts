@@ -72,12 +72,15 @@ interface PubSubSource {
 		channel: string,
 		handler: (message: string) => void,
 		/**
-		 * How a failure is REPORTED. Quasar catches the Redis error, calls this
-		 * and resolves normally — so awaiting the call proves nothing, and
-		 * without it the tier believed it was subscribed while no handler was
-		 * installed.
+		 * How the outcome is REPORTED. Quasar catches the Redis error and calls
+		 * `onError` rather than rejecting, and newer versions declare
+		 * `subscribe` itself `void` — so the call's return value proves nothing
+		 * either way, and these two are the whole signal.
 		 */
-		options?: { onError?: (error: unknown) => void },
+		options?: {
+			onSubscription?: (count: number) => void;
+			onError?: (error: unknown) => void;
+		},
 	): unknown;
 	/**
 	 * Optional, and NAMED when it is there: quasar stacks handlers per channel,
@@ -185,18 +188,18 @@ export function quasarBus(options?: {
 			// quietly incoherent.
 			const attempt = (async (): Promise<(raw: string) => void> => {
 				const source = await manager();
-				let reported: unknown;
-				await source.subscribe(channel, wrapper, {
-					onError: (error) => {
-						reported = error;
-					},
+				// Waited on through the callbacks, not on the call's return value:
+				// `subscribe` reports a failure rather than rejecting, and newer
+				// quasar declares it `void`. This shape is correct against both.
+				await new Promise<void>((resolve, reject) => {
+					source.subscribe(channel, wrapper, {
+						onSubscription: () => resolve(),
+						onError: (error) => {
+							opened.delete(handler);
+							reject(error instanceof Error ? error : new Error(String(error)));
+						},
+					});
 				});
-				if (reported !== undefined) {
-					opened.delete(handler);
-					throw reported instanceof Error
-						? reported
-						: new Error(String(reported));
-				}
 				return wrapper;
 			})();
 			opened.set(handler, attempt);
