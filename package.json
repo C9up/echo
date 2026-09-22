@@ -1,6 +1,6 @@
 {
   "name": "@c9up/echo",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Cache — pluggable cache contract with memory + Redis drivers for the Ream framework",
   "license": "MIT",
   "type": "module",
