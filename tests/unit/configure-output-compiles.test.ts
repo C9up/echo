@@ -7,9 +7,32 @@
  * every name it reaches for is one this package actually has — so the names are
  * read out of the generated source and looked up, rather than trusted.
  */
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { configure } from "../../src/configure.js";
 import { drivers, store } from "../../src/index.js";
+
+/**
+ * Read a stub the way `codemods.makeUsingStub` does.
+ *
+ * The real file, not a fixture: a test that stubbed this out would pass with
+ * a stub that does not exist.
+ */
+function renderStub(
+	stubsRoot: string,
+	stubPath: string,
+	state: Record<string, string | number | boolean>,
+): { to: string; body: string } {
+	const raw = readFileSync(resolve(stubsRoot, stubPath), "utf8");
+	const [, front = "", body = ""] = raw.split(/^---\r?\n/m, 3);
+	const declared = /^to:\s*(.+)$/m.exec(front)?.[1]?.trim() ?? "";
+	const render = (text: string): string =>
+		text.replace(/\{\{\s*([\w.]+)\s*\}\}/g, (match, key: string) =>
+			state[key] === undefined ? match : String(state[key]),
+		);
+	return { to: render(declared), body: render(body) };
+}
 
 /** Capture what `configure` writes, without touching a disk. */
 async function generatedConfig(): Promise<string> {
@@ -20,6 +43,17 @@ async function generatedConfig(): Promise<string> {
 		writeFile: vi.fn(async (_path: string, contents: string) => {
 			written = contents;
 		}),
+		makeUsingStub: vi.fn(
+			async (
+				stubsRoot: string,
+				stubPath: string,
+				state: Record<string, string | number | boolean> = {},
+			) => {
+				const { to, body } = renderStub(stubsRoot, stubPath, state);
+				written = body;
+				return { path: to, contents: body };
+			},
+		),
 	} as never);
 	return written;
 }
