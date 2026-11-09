@@ -38,9 +38,8 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 			store.set(key, value);
 			return "OK";
 		},
-		async del(key) {
-			calls.push({ op: "del", args: [key] });
-			const keys = Array.isArray(key) ? key : [key];
+		async del(...keys) {
+			calls.push({ op: "del", args: keys });
 			let count = 0;
 			for (const k of keys) {
 				if (store.delete(k)) count++;
@@ -190,6 +189,46 @@ describe("echo > RedisDriver > flush", () => {
 		const fake = createFakeRedis({ withScan: true, scanPages: 3 });
 		const driver = new RedisDriver(fake.client);
 		for (let i = 0; i < 9; i++) await driver.set(`k${i}`, i);
+		await driver.flush();
+		expect(fake.store.size).toBe(0);
+	});
+
+	// A real ioredis client reads `this` inside scan(); calling a detached
+	// reference threw and left every key in place.
+	it("calls scan() as a method, so a client that reads `this` works", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		const inner = fake.client;
+		class ThisBoundClient implements RedisClient {
+			readonly #inner = inner;
+			get = (key: string) => this.#inner.get(key);
+			set = (key: string, value: string, ...args: unknown[]) =>
+				this.#inner.set(key, value, ...args);
+			del = (...keys: string[]) => this.#inner.del(...keys);
+			exists = (key: string) => this.#inner.exists(key);
+			keys = (pattern: string) => this.#inner.keys(pattern);
+			sadd = (key: string, ...members: string[]) =>
+				this.#inner.sadd(key, ...members);
+			srem = (key: string, ...members: string[]) =>
+				this.#inner.srem(key, ...members);
+			smembers = (key: string) => this.#inner.smembers(key);
+			expire = (key: string, seconds: number) =>
+				this.#inner.expire(key, seconds);
+			ttl = (key: string) => this.#inner.ttl(key);
+			scan(
+				cursor: string,
+				matchOption: "MATCH",
+				pattern: string,
+				countOption: "COUNT",
+				count: number,
+			): Promise<[string, string[]]> {
+				const scan = this.#inner.scan;
+				if (scan === undefined) throw new Error("fake without scan");
+				return scan(cursor, matchOption, pattern, countOption, count);
+			}
+		}
+		const driver = new RedisDriver(new ThisBoundClient());
+		await driver.set("a", 1);
+		await driver.set("b", 2);
 		await driver.flush();
 		expect(fake.store.size).toBe(0);
 	});

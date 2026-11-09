@@ -14,11 +14,15 @@
 
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
-/** Minimal Redis client interface — compatible with ioredis and node-redis. */
+/**
+ * Minimal Redis client interface, in ioredis' shape — a raw ioredis client
+ * satisfies it as is.
+ */
 export interface RedisClient {
 	get(key: string): Promise<string | null>;
 	set(key: string, value: string, ...args: unknown[]): Promise<unknown>;
-	del(key: string | string[]): Promise<number>;
+	/** Variadic, as ioredis declares it: a raw client then typechecks. */
+	del(...keys: string[]): Promise<number>;
 	exists(key: string): Promise<number>;
 	keys(pattern: string): Promise<string[]>;
 	sadd(key: string, ...members: string[]): Promise<number>;
@@ -222,14 +226,15 @@ export class RedisDriver implements TaggableDriver {
 
 	async flush(prefix?: string): Promise<void> {
 		const client = await this.#client();
-		const scan = client.scan;
-		if (typeof scan === "function") {
+		if (typeof client.scan === "function") {
 			// The driver's own prefix scopes it to this store; `prefix` scopes
 			// it further, to the namespace that asked.
 			const match = `${this.#prefix}${prefix ?? ""}`;
 			let cursor = "0";
 			do {
-				const [nextCursor, keys] = await scan(
+				// Called ON the client: ioredis reads `this` inside scan(), so a
+				// detached reference threw and left every key in place.
+				const [nextCursor, keys] = await client.scan(
 					cursor,
 					"MATCH",
 					`${match}*`,
@@ -238,7 +243,7 @@ export class RedisDriver implements TaggableDriver {
 				);
 				cursor = nextCursor;
 				if (keys.length > 0) {
-					await client.del(keys);
+					await client.del(...keys);
 				}
 			} while (cursor !== "0");
 		} else {
@@ -336,7 +341,7 @@ export class RedisDriver implements TaggableDriver {
 				}
 			}
 			if (members.length > 0) {
-				await client.del(members);
+				await client.del(...members);
 			}
 			await client.del(tagKey);
 		}
