@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { CacheManager } from "../../src/CacheManager.js";
 import {
 	type RedisClient,
 	RedisDriver,
@@ -407,6 +408,31 @@ describe("echo > RedisDriver > empty prefix (bug 300)", () => {
 		const driver = drivers.redis({ client: fake.client, prefix: "" })();
 		await driver.set("k", 1);
 		expect([...fake.store.keys()]).toEqual(["cache:v:k"]);
+	});
+});
+
+describe("echo > RedisDriver > a value it did not write (bug 328)", () => {
+	// A non-JSON value under the prefix — another app, a manual SET, a torn
+	// write — made every read of the key throw, and getOrSet could never
+	// repair it because it reads before computing.
+	it("reads a non-JSON value as a miss", async () => {
+		const fake = createFakeRedis();
+		fake.store.set("cache:v:legacy", "plain text");
+		const driver = new RedisDriver(fake.client);
+
+		expect(await driver.get("legacy")).toBeNull();
+		expect(await driver.getEntry("legacy")).toBeNull();
+	});
+
+	it("lets getOrSet compute and replace it", async () => {
+		const fake = createFakeRedis();
+		fake.store.set("cache:v:legacy", "plain text");
+		const cache = new CacheManager(new RedisDriver(fake.client));
+
+		expect(
+			await cache.getOrSet({ key: "legacy", factory: () => "fresh" }),
+		).toBe("fresh");
+		expect(await cache.get({ key: "legacy" })).toBe("fresh");
 	});
 });
 

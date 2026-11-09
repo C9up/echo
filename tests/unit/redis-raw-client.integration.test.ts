@@ -280,6 +280,18 @@ describeRedis("echo on a raw ioredis client", () => {
 		});
 	});
 
+	describe("a value echo did not write (bug 328)", () => {
+		it("reads as a miss, and getOrSet replaces it", async () => {
+			await raw.set(`${base}v:legacy`, "plain text");
+			const cache = new CacheManager(new RedisDriver(client, base));
+
+			expect(await cache.get({ key: "legacy" })).toBeUndefined();
+			expect(
+				await cache.getOrSet({ key: "legacy", factory: () => "fresh" }),
+			).toBe("fresh");
+		});
+	});
+
 	describe("namespace clear() with glob characters (bug 303)", () => {
 		// SCAN MATCH is a glob: an unescaped `tenant-*` matched every tenant.
 		const cases: Array<{ cleared: string; siblings: string[] }> = [

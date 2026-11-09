@@ -53,6 +53,15 @@ function escapeGlob(literal: string): string {
 	return literal.replace(/[*?[\]\\]/g, "\\$&");
 }
 
+/** JSON, or `undefined` when the text is not JSON at all. */
+function parseJson(raw: string): unknown {
+	try {
+		return JSON.parse(raw);
+	} catch {
+		return undefined;
+	}
+}
+
 function isStringArray(x: unknown): x is string[] {
 	return Array.isArray(x) && x.every((item) => typeof item === "string");
 }
@@ -82,6 +91,8 @@ export class RedisDriver implements TaggableDriver {
 	#resolved: RedisClient | undefined;
 	#pending: Promise<RedisClient> | undefined;
 	#prefix: string;
+	/** Reported once per driver: the condition, not each key, is the news. */
+	#foreignReported = false;
 
 	constructor(source: RedisClientSource, prefix?: string) {
 		this.#source = source;
@@ -152,6 +163,14 @@ export class RedisDriver implements TaggableDriver {
 		return count > 0;
 	}
 
+	#reportForeign(): void {
+		if (this.#foreignReported) return;
+		this.#foreignReported = true;
+		process.stderr.write(
+			`[echo] a value under the Redis prefix "${this.#prefix}" is not one echo wrote; it reads as a miss and the next write replaces it\n`,
+		);
+	}
+
 	async get<T = unknown>(key: string): Promise<T | null> {
 		const entry = await this.getEntry<T>(key);
 		if (entry === null || entry.stale) return null;
@@ -162,8 +181,15 @@ export class RedisDriver implements TaggableDriver {
 		const client = await this.#client();
 		const raw = await client.get(this.#valueKey(key));
 		if (raw === null) return null;
-		const parsed: unknown = JSON.parse(raw);
-		if (!isEnvelope(parsed)) return null;
+		const parsed = parseJson(raw);
+		if (!isEnvelope(parsed)) {
+			// Not something this driver wrote — another application on the
+			// prefix, a manual SET, a torn write. A miss, so getOrSet computes
+			// and overwrites it; it used to throw on every read of the key,
+			// and getOrSet reads before it computes, so it never healed.
+			this.#reportForeign();
+			return null;
+		}
 		const stale = parsed.e > 0 && parsed.e < Date.now();
 		// Deserialize boundary: the on-the-wire value is genuinely `unknown`; the
 		// caller's generic `T` is the assertion. This is the single unavoidable
