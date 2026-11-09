@@ -201,11 +201,13 @@ export class RedisDriver implements TaggableDriver {
 				: { v: value, e: expiresAt };
 		const serialized = JSON.stringify(envelope);
 		if (physicalTtlSeconds > 0) {
+			// Milliseconds, as upstream writes them (`PX`): `EX` takes whole
+			// seconds, so a '500ms' or '1.5s' TTL failed every write.
 			await client.set(
 				this.#valueKey(key),
 				serialized,
-				"EX",
-				physicalTtlSeconds,
+				"PX",
+				Math.ceil(physicalTtlSeconds * 1000),
 			);
 		} else {
 			await client.set(this.#valueKey(key), serialized);
@@ -339,6 +341,9 @@ export class RedisDriver implements TaggableDriver {
 		physicalTtlSeconds: number,
 	): Promise<void> {
 		const client = await this.#client();
+		// EXPIRE takes whole seconds. Rounded UP, so an index never dies
+		// before the entry it points at.
+		const indexTtl = Math.ceil(physicalTtlSeconds);
 		const metaKey = this.#metaKey(key);
 		const oldTags = await client.smembers(metaKey);
 		const newTagSet = new Set(tags);
@@ -357,8 +362,8 @@ export class RedisDriver implements TaggableDriver {
 			}
 			if (physicalTtlSeconds > 0) {
 				const currentTtl = await client.ttl(tagKey);
-				if (currentTtl < 0 || physicalTtlSeconds > currentTtl) {
-					await client.expire(tagKey, physicalTtlSeconds);
+				if (currentTtl < 0 || indexTtl > currentTtl) {
+					await client.expire(tagKey, indexTtl);
 				}
 			}
 		}
@@ -369,7 +374,7 @@ export class RedisDriver implements TaggableDriver {
 		if (tags.length > 0) {
 			await client.sadd(metaKey, ...tags);
 			if (physicalTtlSeconds > 0) {
-				await client.expire(metaKey, physicalTtlSeconds);
+				await client.expire(metaKey, indexTtl);
 			}
 		}
 	}

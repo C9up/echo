@@ -165,12 +165,22 @@ describe("echo > RedisDriver > get/set/has/delete", () => {
 		});
 	});
 
-	it("set with TTL passes EX <seconds> to the client", async () => {
+	it("set with TTL passes PX <milliseconds> to the client", async () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client);
 		await driver.set("k", { v: 1 }, 60);
 		const setCall = fake.calls.find((c) => c.op === "set");
-		expect(setCall?.args.slice(2)).toEqual(["EX", 60]);
+		expect(setCall?.args.slice(2)).toEqual(["PX", 60_000]);
+	});
+
+	it("writes a fractional TTL as whole milliseconds, and whole seconds on indexes", async () => {
+		const fake = createFakeRedis();
+		const driver = new RedisDriver(fake.client);
+		await driver.setWithTags("k", 1, ["t"], 1.0004);
+		const setCall = fake.calls.find((c) => c.op === "set");
+		expect(setCall?.args.slice(2)).toEqual(["PX", 1001]);
+		const expires = fake.calls.filter((c) => c.op === "expire");
+		expect(expires.map((c) => c.args[1])).toEqual([2, 2]);
 	});
 
 	it("set without TTL omits EX argument", async () => {

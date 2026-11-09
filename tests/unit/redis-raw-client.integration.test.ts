@@ -187,6 +187,64 @@ describeRedis("echo on a raw ioredis client", () => {
 		});
 	});
 
+	describe("sub-second and fractional durations (bug 316)", () => {
+		// `SET ... EX` takes whole seconds; a fractional one failed every write.
+		const sleep = (ms: number) =>
+			new Promise((resolve) => setTimeout(resolve, ms));
+
+		it("writes ttl '500ms' and expires it", async () => {
+			const cache = new CacheManager(new RedisDriver(client, base));
+			await cache.set({ key: "k", value: 1, ttl: "500ms" });
+			expect(await cache.get({ key: "k" })).toBe(1);
+			const pttl = await raw.pttl(`${base}v:k`);
+			expect(pttl).toBeGreaterThan(0);
+			expect(pttl).toBeLessThanOrEqual(500);
+
+			await sleep(600);
+
+			expect(await cache.get({ key: "k" })).toBeUndefined();
+		});
+
+		it("writes ttl '1.5s', grace '0.5s' and tagged entries", async () => {
+			const cache = new CacheManager(new RedisDriver(client, base));
+			await cache.set({ key: "a", value: 1, ttl: "1.5s" });
+			await cache.set({ key: "b", value: 2, ttl: 10, grace: "0.5s" });
+			await cache.set({ key: "c", value: 3, ttl: "1.5s", tags: ["t"] });
+
+			expect(await cache.get({ key: "a" })).toBe(1);
+			expect(await cache.get({ key: "b" })).toBe(2);
+			expect(await cache.get({ key: "c" })).toBe(3);
+			expect(await raw.ttl(`${base}t:t`)).toBeGreaterThan(0);
+		});
+
+		it("getOrSet with ttl '250ms' stores the factory value", async () => {
+			const cache = new CacheManager(new RedisDriver(client, base));
+			const value = await cache.getOrSet({
+				key: "g",
+				ttl: "250ms",
+				factory: () => "computed",
+			});
+			expect(value).toBe("computed");
+			expect(await cache.get({ key: "g" })).toBe("computed");
+		});
+
+		it("promotes a fractional remaining TTL into a Redis-backed L1", async () => {
+			const l2 = new MemoryDriver();
+			try {
+				const tiered = new TieredDriver({
+					l1: new RedisDriver(client, `${base}l1:`),
+					l2,
+				});
+				await l2.setEntry("k", "v", { ttlSeconds: 1.2345 });
+
+				expect(await tiered.get("k")).toBe("v");
+				expect(await raw.pttl(`${base}l1:v:k`)).toBeGreaterThan(0);
+			} finally {
+				l2.destroy();
+			}
+		});
+	});
+
 	describe("namespace clear() with glob characters (bug 303)", () => {
 		// SCAN MATCH is a glob: an unescaped `tenant-*` matched every tenant.
 		const cases: Array<{ cleared: string; siblings: string[] }> = [
