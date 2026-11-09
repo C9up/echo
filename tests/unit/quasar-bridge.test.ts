@@ -79,6 +79,9 @@ describe("echo > the quasar bridge", () => {
 		await expect((await load())("main")()).rejects.toThrow(
 			/@c9up\/quasar is not installed[\s\S]*pnpm add @c9up\/quasar/,
 		);
+		await expect((await load())("main")()).rejects.toThrow(
+			expect.objectContaining({ code: "E_ECHO_QUASAR_MISSING" }),
+		);
 	});
 
 	it("names the store that asked for it", async () => {
@@ -110,6 +113,9 @@ describe("echo > the quasar bridge", () => {
 
 			await expect((await load())("main")(), missing).rejects.toThrow(
 				new RegExp(`connection 'main' is missing ${missing}`),
+			);
+			await expect((await load())("main")(), missing).rejects.toThrow(
+				expect.objectContaining({ code: "E_ECHO_INCOMPLETE_CONNECTION" }),
 			);
 		}
 	});

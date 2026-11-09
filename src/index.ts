@@ -30,11 +30,14 @@ export { parseDuration, resolveTtlSeconds } from "./duration.js";
 export type { EchoProviderConfig } from "./EchoProvider.js";
 export {
 	EchoError,
+	errors,
 	FactoryError,
+	InvalidArgumentError,
 	InvalidDurationError,
 	L2CacheError,
 	LockTimeoutError,
 	TimeoutError,
+	UndefinedValueError,
 } from "./errors.js";
 export {
 	CacheStoreManager,

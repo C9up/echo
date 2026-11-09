@@ -1,6 +1,7 @@
 import "./augmentations.js";
 import { type CacheConfig, CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
+import { EchoError } from "./errors.js";
 import { CacheStoreManager, type MultiStoreConfig } from "./StoreManager.js";
 import { clearCache, getCache, setCache } from "./services/main.js";
 import type { CacheEmitter } from "./types.js";
@@ -97,7 +98,8 @@ export default class EchoProvider {
 			const config = (raw ?? {}) as EchoProviderConfig;
 			const driver = config.driver ?? "memory";
 			if (driver !== "memory") {
-				throw new Error(
+				throw new EchoError(
+					"E_ECHO_UNSUPPORTED_DRIVER",
 					`[echo] Unsupported driver '${driver}' for default provider — ` +
 						"wire CacheManager yourself for non-memory drivers, or use the " +
 						"multi-store `{ default, stores }` config.",

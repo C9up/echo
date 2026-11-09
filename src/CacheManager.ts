@@ -11,10 +11,13 @@
 
 import { type Duration, parseDuration, resolveTtlSeconds } from "./duration.js";
 import {
+	EchoError,
 	FactoryError,
+	InvalidArgumentError,
 	InvalidDurationError,
 	LockTimeoutError,
 	TimeoutError,
+	UndefinedValueError,
 } from "./errors.js";
 import type {
 	CacheEmitter,
@@ -44,6 +47,13 @@ function isTaggableDriver(driver: CacheDriver): driver is TaggableDriver {
 		typeof candidate.setWithTags === "function" &&
 		(typeof candidate.deleteByTag === "function" ||
 			typeof candidate.flushTags === "function")
+	);
+}
+
+function notTaggable(): EchoError {
+	return new EchoError(
+		"E_ECHO_NOT_TAGGABLE",
+		"Echo: the configured driver does not support tag-based invalidation",
 	);
 }
 
@@ -319,7 +329,8 @@ export class CacheManager {
 	use(name?: string): CacheManager {
 		if (this.#stores) return this.#stores.use(name);
 		if (name === undefined) return this;
-		throw new Error(
+		throw new EchoError(
+			"E_ECHO_UNKNOWN_STORE",
 			`Echo: cannot use the "${name}" store — this cache is configured with a single store. ` +
 				"Declare `{ default, stores }` in config/cache.ts to name several.",
 		);
@@ -429,9 +440,7 @@ export class CacheManager {
 		if (value === null || value === undefined) {
 			// Named divergence (fail-loud): unlike bento (which no-ops), echo throws
 			// on caching null/undefined — a null cache write is almost always a bug.
-			throw new TypeError(
-				"Echo: caching null/undefined values is not supported",
-			);
+			throw new UndefinedValueError();
 		}
 		if (ttlSeconds < 0) {
 			// A TTL in the past: the value has already expired. Kept only as
@@ -460,9 +469,7 @@ export class CacheManager {
 		}
 		if (tags.length > 0) {
 			if (!isTaggableDriver(this.#driver)) {
-				throw new Error(
-					"Echo: the configured driver does not support tag-based invalidation",
-				);
+				throw notTaggable();
 			}
 			await this.#driver.setWithTags(
 				prefixed,
@@ -691,9 +698,7 @@ export class CacheManager {
 			? tagsOrOptions
 			: tagsOrOptions.tags;
 		if (!isTaggableDriver(this.#driver)) {
-			throw new Error(
-				"Echo: the configured driver does not support tag-based invalidation",
-			);
+			throw notTaggable();
 		}
 		const scoped = this.#prefixTags(tags);
 		if (typeof this.#driver.deleteByTag === "function") {
@@ -740,7 +745,7 @@ export class CacheManager {
 	): NormalizedGetOrSet<T> {
 		if (typeof a === "string") {
 			if (typeof c !== "function") {
-				throw new TypeError(
+				throw new InvalidArgumentError(
 					"Echo: getOrSet(key, ttl, factory) requires a factory function",
 				);
 			}

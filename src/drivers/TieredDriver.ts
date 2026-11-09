@@ -9,7 +9,7 @@
  */
 
 import { type Duration, resolveTtlSeconds } from "../duration.js";
-import { L2CacheError } from "../errors.js";
+import { EchoError, L2CacheError } from "../errors.js";
 import type {
 	CacheDriver,
 	CacheEntry,
@@ -491,7 +491,8 @@ export class TieredDriver implements TaggableDriver {
 		const l1 = this.#l1;
 		const l2 = this.#l2;
 		if (!isTaggable(l1) || !isTaggable(l2)) {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_NOT_TAGGABLE",
 				"Echo: TieredDriver.deleteByTag requires both tiers to be taggable",
 			);
 		}

@@ -12,6 +12,7 @@
  */
 
 import type { CacheManager } from "../CacheManager.js";
+import { EchoError } from "../errors.js";
 
 let instance: CacheManager | undefined;
 
@@ -45,7 +46,8 @@ const cache: CacheManager = new Proxy({} as CacheManager, {
 			return undefined;
 		}
 		if (!instance) {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_NOT_BOOTED",
 				"[echo] CacheManager singleton accessed before EchoProvider.boot() ran " +
 					"or `setCache(myCache)` was called. Wire one of them first.",
 			);

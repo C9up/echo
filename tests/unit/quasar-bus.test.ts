@@ -306,12 +306,18 @@ describe("echo > the quasar cache bus", () => {
 		await expect((await load())().publish(message)).rejects.toThrow(
 			/@c9up\/quasar is not installed/,
 		);
+		await expect((await load())().publish(message)).rejects.toThrow(
+			expect.objectContaining({ code: "E_ECHO_QUASAR_MISSING" }),
+		);
 	});
 
 	it("says so when the connection cannot publish", async () => {
 		mockQuasar({ default: { connection: () => ({ get: () => undefined }) } });
 		await expect((await load())().publish(message)).rejects.toThrow(
 			/does not expose publish\(\)\/subscribe\(\)/,
+		);
+		await expect((await load())().publish(message)).rejects.toThrow(
+			expect.objectContaining({ code: "E_ECHO_INCOMPLETE_CONNECTION" }),
 		);
 	});
 

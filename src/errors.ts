@@ -1,5 +1,10 @@
 /**
  * Echo cache errors — bentocache parity (`errors.ts`).
+ *
+ * Every error carries a `code`. Upstream's are kept verbatim
+ * (`E_FACTORY_ERROR`, `E_FACTORY_HARD_TIMEOUT`, `E_UNDEFINED_VALUE`,
+ * `E_L2_CACHE_ERROR`): code written against a cache module already catches on
+ * them. Failures echo invents carry the `E_ECHO_` namespace.
  */
 
 /**
@@ -62,10 +67,12 @@ export class L2CacheError extends EchoError {
 }
 
 /** Raised when a factory exceeds its configured `hardTimeout`. */
-export class TimeoutError extends Error {
+export class TimeoutError extends EchoError {
 	constructor(key: string, timeoutMs: number) {
-		super(`Echo: factory for "${key}" timed out after ${timeoutMs}ms`);
-		this.name = "TimeoutError";
+		super(
+			"E_FACTORY_HARD_TIMEOUT",
+			`Echo: factory for "${key}" timed out after ${timeoutMs}ms`,
+		);
 	}
 }
 
@@ -73,7 +80,7 @@ export class TimeoutError extends Error {
  * Wraps an error thrown by a `getOrSet` factory. Passed to `onFactoryError`
  * so callers can observe both foreground and background factory failures.
  */
-export class FactoryError extends Error {
+export class FactoryError extends EchoError {
 	/** The cache key the factory was computing. */
 	readonly key: string;
 	/** The original error thrown by the factory. */
@@ -83,10 +90,41 @@ export class FactoryError extends Error {
 
 	constructor(key: string, cause: unknown, isBackground: boolean) {
 		const reason = cause instanceof Error ? cause.message : String(cause);
-		super(`Echo: factory for "${key}" failed: ${reason}`);
-		this.name = "FactoryError";
+		super("E_FACTORY_ERROR", `Echo: factory for "${key}" failed: ${reason}`);
 		this.key = key;
 		this.cause = cause;
 		this.isBackground = isBackground;
 	}
 }
+
+/**
+ * Raised for a `null` or `undefined` value — upstream's `E_UNDEFINED_VALUE`.
+ * A `TypeError`, as this refusal always was. Echo refuses `null` as well: a
+ * null cache write is almost always a bug.
+ */
+export class UndefinedValueError extends TypeError {
+	readonly code = "E_UNDEFINED_VALUE";
+
+	constructor() {
+		super("Echo: caching null/undefined values is not supported");
+		this.name = "UndefinedValueError";
+	}
+}
+
+/** Raised for an argument a method cannot work with. A `TypeError`. */
+export class InvalidArgumentError extends TypeError {
+	readonly code = "E_ECHO_INVALID_ARGUMENT";
+
+	constructor(message: string) {
+		super(message);
+		this.name = "InvalidArgumentError";
+	}
+}
+
+/** Upstream's `errors` map, by code. */
+export const errors = {
+	E_FACTORY_ERROR: FactoryError,
+	E_FACTORY_HARD_TIMEOUT: TimeoutError,
+	E_UNDEFINED_VALUE: UndefinedValueError,
+	E_L2_CACHE_ERROR: L2CacheError,
+};

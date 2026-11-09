@@ -17,6 +17,7 @@ import {
 	type CacheBus,
 	isBusMessage,
 } from "./drivers/TieredDriver.js";
+import { EchoError } from "./errors.js";
 import { quasarConnection as loadQuasarConnection } from "./vendor/quasarConnection.js";
 
 /**
@@ -51,7 +52,14 @@ export function quasarConnection(name?: string): () => Promise<RedisClient> {
 			name,
 			required: REQUIRED,
 			what: "the cache store",
-			raise: (_reason, message, cause) => new Error(message, { cause }),
+			raise: (reason, message, cause) =>
+				new EchoError(
+					reason === "quasar-missing"
+						? "E_ECHO_QUASAR_MISSING"
+						: "E_ECHO_INCOMPLETE_CONNECTION",
+					message,
+					{ cause },
+				),
 		});
 }
 
@@ -118,7 +126,8 @@ async function loadQuasar(context: string): Promise<unknown> {
 			? loaded
 			: Reflect.get(Object(loaded), "default");
 	} catch (cause) {
-		throw new Error(
+		throw new EchoError(
+			"E_ECHO_QUASAR_MISSING",
 			`Echo: ${context}, but @c9up/quasar is not installed.\n  pnpm add @c9up/quasar`,
 			{ cause },
 		);
@@ -157,7 +166,8 @@ export function quasarBus(options?: {
 				? loaded.connection(options?.connection)
 				: loaded;
 			if (!isPubSubSource(source)) {
-				throw new Error(
+				throw new EchoError(
+					"E_ECHO_INCOMPLETE_CONNECTION",
 					"Echo: the quasar connection does not expose publish()/subscribe()",
 				);
 			}

@@ -97,6 +97,9 @@ describe("echo > the provider", () => {
 		await expect(context.container.resolve(CacheManager)).rejects.toThrow(
 			/Unsupported driver 'redis'/,
 		);
+		await expect(context.container.resolve(CacheManager)).rejects.toThrow(
+			expect.objectContaining({ code: "E_ECHO_UNSUPPORTED_DRIVER" }),
+		);
 	});
 
 	it("wires an emitter when the container has one", async () => {
@@ -194,6 +197,9 @@ describe("echo > the service accessor", () => {
 		const { default: cache } = await import("../../src/services/main.js");
 
 		expect(() => cache.get).toThrow(/accessed before EchoProvider.boot\(\)/);
+		expect(() => cache.get).toThrow(
+			expect.objectContaining({ code: "E_ECHO_NOT_BOOTED" }),
+		);
 	});
 
 	it("forwards to the bound manager, bound to it", async () => {

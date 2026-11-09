@@ -27,6 +27,7 @@ import {
 	type TieredDriverOptions,
 } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
+import { EchoError } from "./errors.js";
 import { quasarBus, quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter, CacheEventMap } from "./types.js";
 
@@ -135,7 +136,8 @@ export class Store {
 		const l1 = this.#l1;
 		const l2 = this.#l2;
 		if (!l1 && !l2) {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
 				"Echo: a store needs a layer — call useL1Layer() or useL2Layer() on it.",
 			);
 		}
@@ -153,7 +155,8 @@ export class Store {
 		}
 		const only = (l1 ?? l2) as DriverFactory;
 		if (this.#bus) {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
 				"Echo: a bus only means something with two layers — it keeps each instance's L1 in step. Add useL2Layer(), or drop useBus().",
 			);
 		}
@@ -253,7 +256,8 @@ export class CacheStoreManager {
 	constructor(config: MultiStoreConfig) {
 		this.#config = config;
 		if (!config.stores[config.default]) {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_UNKNOWN_STORE",
 				`Echo: default store "${config.default}" is not defined in stores`,
 			);
 		}
@@ -267,7 +271,10 @@ export class CacheStoreManager {
 
 		const declared = this.#config.stores[store];
 		if (!declared) {
-			throw new Error(`Echo: unknown cache store "${store}"`);
+			throw new EchoError(
+				"E_ECHO_UNKNOWN_STORE",
+				`Echo: unknown cache store "${store}"`,
+			);
 		}
 		const cfg = entryOf(declared);
 		const manager = new CacheManager(cfg.driver({ store }), {

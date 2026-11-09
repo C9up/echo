@@ -6,7 +6,7 @@
 
 import { parseBytes } from "../bytes.js";
 import { checkTtlSeconds } from "../duration.js";
-import { EchoError } from "../errors.js";
+import { EchoError, UndefinedValueError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 export interface MemoryDriverOptions {
@@ -55,7 +55,8 @@ interface StoredEntry {
 function toJson(value: unknown): string {
 	const json = JSON.stringify(value);
 	if (json === undefined) {
-		throw new TypeError(
+		throw new EchoError(
+			"E_ECHO_UNSERIALIZABLE_VALUE",
 			"Echo: the memory driver stores values as JSON, and this one has no JSON form — pass `serialize: false` to keep it as is",
 		);
 	}
@@ -278,9 +279,7 @@ export class MemoryDriver implements TaggableDriver {
 		expiresAtOverride?: number,
 	): void {
 		if (value === null || value === undefined) {
-			throw new TypeError(
-				"Echo: caching null/undefined values is not supported",
-			);
+			throw new UndefinedValueError();
 		}
 		// Before anything is touched: a value JSON cannot carry must leave the
 		// previous entry and its tags exactly as they were.

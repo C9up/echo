@@ -14,6 +14,7 @@
  */
 
 import { checkTtlSeconds } from "../duration.js";
+import { EchoError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 /**
@@ -340,7 +341,8 @@ export class RedisDriver implements TaggableDriver {
 	): Promise<void> {
 		const client = await this.#client();
 		if (typeof client.scan !== "function") {
-			throw new Error(
+			throw new EchoError(
+				"E_ECHO_SCAN_UNSUPPORTED",
 				"Echo: RedisDriver.flush() requires a client with scan() support. KEYS is not safe for production use.",
 			);
 		}
