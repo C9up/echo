@@ -158,7 +158,7 @@ describe("echo > RedisDriver > get/set/has/delete", () => {
 		await driver.set("user:1", { name: "Alice" });
 		// Stored as a grace-aware envelope { v: value, e: staleUntil } so a stale
 		// value can be served while a background refresh runs.
-		const raw = fake.store.get("cache:user:1");
+		const raw = fake.store.get("cache:v:user:1");
 		expect(raw && JSON.parse(raw).v).toEqual({ name: "Alice" });
 		expect(await driver.get<{ name: string }>("user:1")).toEqual({
 			name: "Alice",
@@ -274,8 +274,8 @@ describe("echo > RedisDriver > tagging", () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client);
 		await driver.setWithTags("article:42", { title: "x" }, ["news", "fr"]);
-		expect(fake.sets.get("cache:tag:news")?.has("cache:article:42")).toBe(true);
-		expect(fake.sets.get("cache:tag:fr")?.has("cache:article:42")).toBe(true);
+		expect(fake.sets.get("cache:t:news")?.has("article:42")).toBe(true);
+		expect(fake.sets.get("cache:t:fr")?.has("article:42")).toBe(true);
 	});
 
 	it("setWithTags + TTL extends the tag-set TTL when shorter", async () => {
@@ -294,7 +294,7 @@ describe("echo > RedisDriver > tagging", () => {
 		await driver.flushTags(["news"]);
 
 		expect(fake.store.size).toBe(0);
-		expect(fake.sets.has("cache:tag:news")).toBe(false);
+		expect(fake.sets.has("cache:t:news")).toBe(false);
 	});
 
 	// Audit 2026-06-13: a plain set() over a tagged key never touched the tag/meta
@@ -324,16 +324,14 @@ describe("echo > RedisDriver > tagging", () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client);
 		await driver.setWithTags("article:42", { v: 1 }, ["news"]);
-		expect(fake.sets.get("cache:tag:news")?.has("cache:article:42")).toBe(true);
+		expect(fake.sets.get("cache:t:news")?.has("article:42")).toBe(true);
 		// Re-tag the same key under a different group.
 		await driver.setWithTags("article:42", { v: 2 }, ["homepage"]);
 		// Old tag-set must no longer reference the key.
-		expect(
-			fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false,
-		).toBe(false);
-		expect(fake.sets.get("cache:tag:homepage")?.has("cache:article:42")).toBe(
-			true,
+		expect(fake.sets.get("cache:t:news")?.has("article:42") ?? false).toBe(
+			false,
 		);
+		expect(fake.sets.get("cache:t:homepage")?.has("article:42")).toBe(true);
 		// Crucial assertion: flushing the OLD tag must NOT wipe the current value.
 		await driver.flushTags(["news"]);
 		expect(await driver.get("article:42")).toEqual({ v: 2 });
@@ -347,14 +345,12 @@ describe("echo > RedisDriver > tagging", () => {
 		// Both tag-sets must be cleaned — otherwise a later flushTags(['news'])
 		// would no-op-delete a non-existent key (or, worse, delete a future
 		// key reusing the slot).
-		expect(
-			fake.sets.get("cache:tag:news")?.has("cache:article:42") ?? false,
-		).toBe(false);
-		expect(
-			fake.sets.get("cache:tag:fr")?.has("cache:article:42") ?? false,
-		).toBe(false);
+		expect(fake.sets.get("cache:t:news")?.has("article:42") ?? false).toBe(
+			false,
+		);
+		expect(fake.sets.get("cache:t:fr")?.has("article:42") ?? false).toBe(false);
 		// Reverse-index gone too.
-		expect(fake.sets.has("cache:meta:tags:article:42")).toBe(false);
+		expect(fake.sets.has("cache:m:article:42")).toBe(false);
 	});
 
 	it("flushTags on ONE tag of a multi-tagged key cleans the key out of the OTHER tag-set too", async () => {
@@ -364,10 +360,10 @@ describe("echo > RedisDriver > tagging", () => {
 		await driver.flushTags(["news"]);
 		// Value gone, both tag-sets cleaned (no dangling reference in homepage).
 		expect(await driver.get("article:42")).toBe(null);
-		expect(fake.sets.has("cache:tag:news")).toBe(false);
-		expect(
-			fake.sets.get("cache:tag:homepage")?.has("cache:article:42") ?? false,
-		).toBe(false);
+		expect(fake.sets.has("cache:t:news")).toBe(false);
+		expect(fake.sets.get("cache:t:homepage")?.has("article:42") ?? false).toBe(
+			false,
+		);
 	});
 });
 
@@ -393,14 +389,14 @@ describe("echo > RedisDriver > empty prefix (bug 300)", () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client, "");
 		await driver.set("k", 1);
-		expect([...fake.store.keys()]).toEqual(["cache:k"]);
+		expect([...fake.store.keys()]).toEqual(["cache:v:k"]);
 	});
 
 	it("drivers.redis({ prefix: '' }) resolves to the default prefix", async () => {
 		const fake = createFakeRedis();
 		const driver = drivers.redis({ client: fake.client, prefix: "" })();
 		await driver.set("k", 1);
-		expect([...fake.store.keys()]).toEqual(["cache:k"]);
+		expect([...fake.store.keys()]).toEqual(["cache:v:k"]);
 	});
 });
 
@@ -409,7 +405,7 @@ describe("echo > RedisDriver > custom prefix", () => {
 		const fake = createFakeRedis();
 		const driver = new RedisDriver(fake.client, "myapp:");
 		await driver.set("session:1", { uid: 1 });
-		expect(fake.store.has("myapp:session:1")).toBe(true);
+		expect(fake.store.has("myapp:v:session:1")).toBe(true);
 		expect(await driver.get("session:1")).toEqual({ uid: 1 });
 	});
 });

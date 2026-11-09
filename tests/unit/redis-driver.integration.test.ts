@@ -80,7 +80,7 @@ describeRedis("echo RedisDriver against a live Redis", () => {
 		await d.set("short", "value", 60);
 
 		// Read back from the server, not from our own arithmetic.
-		const ttl = await manager.connection().ttl(`${prefix}short`);
+		const ttl = await manager.connection().ttl(`${prefix}v:short`);
 		expect(ttl).toBeGreaterThan(50);
 		expect(ttl).toBeLessThanOrEqual(60);
 	});
@@ -101,7 +101,7 @@ describeRedis("echo RedisDriver against a live Redis", () => {
 
 		// -1 is Redis for "no expiry" — a cache entry meant to persist must not
 		// silently acquire one.
-		expect(await manager.connection().ttl(`${prefix}forever`)).toBe(-1);
+		expect(await manager.connection().ttl(`${prefix}v:forever`)).toBe(-1);
 	});
 
 	it("invalidates every key carrying a tag", async () => {
@@ -130,8 +130,8 @@ describeRedis("echo RedisDriver against a live Redis", () => {
 		// The key is gone from BOTH tag sets, so a later deleteByTag cannot
 		// resurrect work on a dead key.
 		const client = manager.connection();
-		expect(await client.smembers(`${prefix}tag:posts`)).toEqual([]);
-		expect(await client.smembers(`${prefix}tag:featured`)).toEqual([]);
+		expect(await client.smembers(`${prefix}t:posts`)).toEqual([]);
+		expect(await client.smembers(`${prefix}t:featured`)).toEqual([]);
 	});
 
 	it("flushes every prefixed key by walking a real SCAN cursor", async () => {

@@ -87,6 +87,65 @@ describeRedis("echo on a raw ioredis client", () => {
 		});
 	});
 
+	describe("bookkeeping keys a cache key cannot reach (bug 314)", () => {
+		// Tag sets and reverse indexes lived in the data keyspace: a cache key
+		// `tag:<t>` overwrote a tag SET with a string, and every invalidation
+		// of the entries it indexed failed with WRONGTYPE.
+		it("a key named like a tag set does not block deleteByTag", async () => {
+			const cache = new CacheManager(new RedisDriver(client, base));
+			await cache.set({ key: "perm:7", value: "admin", tags: ["user:7"] });
+			await cache.set({ key: "tag:user:7", value: "x" });
+
+			await cache.deleteByTag({ tags: ["user:7"] });
+
+			expect(await cache.get({ key: "perm:7" })).toBeUndefined();
+			expect(await cache.get({ key: "tag:user:7" })).toBe("x");
+		});
+
+		it("a key named like a reverse index does not block delete()", async () => {
+			const root = new CacheManager(new RedisDriver(client, base));
+			const acl = root.namespace("acl");
+			await acl.set({ key: "role:9", value: "admin", tags: ["user:9"] });
+			await root.set({ key: "meta:tags:acl:role:9", value: "x" });
+
+			await acl.delete({ key: "role:9" });
+
+			expect(await acl.get({ key: "role:9" })).toBeUndefined();
+		});
+
+		it("a key named like a reverse index does not block set()", async () => {
+			const root = new CacheManager(new RedisDriver(client, base));
+			await root.set({ key: "meta:tags:k", value: "x" });
+
+			await root.set({ key: "k", value: "v", tags: ["t"] });
+			await root.set({ key: "k", value: "v2" });
+
+			expect(await root.get({ key: "k" })).toBe("v2");
+			expect(await root.get({ key: "meta:tags:k" })).toBe("x");
+		});
+
+		it("a namespace clear leaves none of that namespace's bookkeeping behind", async () => {
+			const root = new CacheManager(new RedisDriver(client, base));
+			await root
+				.namespace("tenantA")
+				.set({ key: "doc", value: 1, tags: ["t"] });
+			await root
+				.namespace("tenantB")
+				.set({ key: "doc2", value: 2, ttl: null, tags: ["t"] });
+
+			await root.namespace("tenantB").clear();
+
+			const left = await raw.keys(`${base}*`);
+			expect(left.some((key) => key.includes("tenantB"))).toBe(false);
+			expect(await root.namespace("tenantA").get({ key: "doc" })).toBe(1);
+			// tenantA's entry is still reachable by its tag.
+			await root.deleteByTag({ tags: ["t"] });
+			expect(await root.namespace("tenantA").get({ key: "doc" })).toBe(
+				undefined,
+			);
+		});
+	});
+
 	describe("namespace clear() with glob characters (bug 303)", () => {
 		// SCAN MATCH is a glob: an unescaped `tenant-*` matched every tenant.
 		const cases: Array<{ cleared: string; siblings: string[] }> = [
