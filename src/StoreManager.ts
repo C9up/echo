@@ -16,7 +16,10 @@
  */
 
 import { CacheManager } from "./CacheManager.js";
-import { MemoryDriver } from "./drivers/MemoryDriver.js";
+import {
+	MemoryDriver,
+	type MemoryDriverOptions,
+} from "./drivers/MemoryDriver.js";
 import { type RedisClient, RedisDriver } from "./drivers/RedisDriver.js";
 import { type CacheBus, TieredDriver } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
@@ -146,12 +149,12 @@ export const drivers = {
 	 * `maxItems` bounds the store by COUNT, which a TTL cannot: a cache keyed by
 	 * a user id or a search term grows until the process runs out of memory,
 	 * however short each entry's life. Omit it for no ceiling.
+	 *
+	 * Values are stored as JSON and read back as copies; `serialize: false`
+	 * keeps references instead (see {@link MemoryDriverOptions.serialize}).
 	 */
-	memory(options?: {
-		sweepIntervalMs?: number;
-		maxItems?: number;
-	}): DriverFactory {
-		return () => new MemoryDriver(options?.sweepIntervalMs, options?.maxItems);
+	memory(options?: MemoryDriverOptions): DriverFactory {
+		return () => new MemoryDriver({ ...options });
 	},
 	/**
 	 * Either hand it a client, or name a quasar connection — the AdonisJS shape,

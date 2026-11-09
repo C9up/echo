@@ -7,13 +7,40 @@
 import { checkTtlSeconds } from "../duration.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
+export interface MemoryDriverOptions {
+	/** How often expired entries are swept, in milliseconds (default 60 000). */
+	sweepIntervalMs?: number;
+	/** Entry ceiling; `0` for none. */
+	maxItems?: number;
+	/**
+	 * Store values as JSON and hand out a fresh copy on every read (default).
+	 *
+	 * `false` keeps the caller's object and returns that same reference, which
+	 * is faster and keeps class instances, Dates and Maps intact — but any
+	 * reader that mutates what it got rewrites the value for every later one.
+	 */
+	serialize?: boolean;
+}
+
 interface StoredEntry {
+	/** The JSON text when the driver serializes, the value itself when it does not. */
 	value: unknown;
 	/** Logical expiry (epoch ms); `0` means never. Past this the entry is stale. */
 	expiresAt: number;
 	/** Physical eviction (epoch ms); `0` means never. Grace window ends here. */
 	staleUntil: number;
 	tags: string[];
+}
+
+/** The JSON a value is stored as; refused when JSON cannot carry it. */
+function toJson(value: unknown): string {
+	const json = JSON.stringify(value);
+	if (json === undefined) {
+		throw new TypeError(
+			"Echo: the memory driver stores values as JSON, and this one has no JSON form — pass `serialize: false` to keep it as is",
+		);
+	}
+	return json;
 }
 
 export class MemoryDriver implements TaggableDriver {
@@ -30,10 +57,33 @@ export class MemoryDriver implements TaggableDriver {
 	 * genuinely wants no ceiling.
 	 */
 	readonly #maxItems: number;
+	/**
+	 * Whether values go in as JSON and come out as a copy.
+	 *
+	 * On by default, as upstream serializes its L1 by default: the driver kept
+	 * the caller's object and returned that same reference, so a request that
+	 * mutated what it read — a cached permission set, say — changed it for
+	 * every later reader. JSON is also what the Redis driver stores, so a
+	 * value reads back the same in development and in production.
+	 */
+	readonly #serialize: boolean;
 
-	constructor(sweepIntervalMs = 60_000, maxItems = 0) {
-		this.#maxItems = maxItems > 0 ? maxItems : 0;
-		this.#sweepInterval = setInterval(() => this.#sweep(), sweepIntervalMs);
+	/**
+	 * @param options the options, or the sweep interval in milliseconds (the
+	 *   original positional form, kept with `maxItems` beside it).
+	 */
+	constructor(options: MemoryDriverOptions | number = {}, maxItems = 0) {
+		const config: MemoryDriverOptions =
+			typeof options === "number"
+				? { sweepIntervalMs: options, maxItems }
+				: options;
+		const ceiling = config.maxItems ?? 0;
+		this.#maxItems = ceiling > 0 ? ceiling : 0;
+		this.#serialize = config.serialize ?? true;
+		this.#sweepInterval = setInterval(
+			() => this.#sweep(),
+			config.sweepIntervalMs ?? 60_000,
+		);
 		if (
 			typeof this.#sweepInterval === "object" &&
 			"unref" in this.#sweepInterval
@@ -115,8 +165,12 @@ export class MemoryDriver implements TaggableDriver {
 			return null;
 		}
 		const stale = entry.expiresAt > 0 && entry.expiresAt < now;
+		const value =
+			this.#serialize && typeof entry.value === "string"
+				? JSON.parse(entry.value)
+				: entry.value;
 		return {
-			value: entry.value as T,
+			value: value as T,
 			stale,
 			expiresAt: entry.expiresAt,
 			tags: [...entry.tags],
@@ -147,6 +201,9 @@ export class MemoryDriver implements TaggableDriver {
 				"Echo: caching null/undefined values is not supported",
 			);
 		}
+		// Before anything is touched: a value JSON cannot carry must leave the
+		// previous entry and its tags exactly as they were.
+		const stored = this.#serialize ? toJson(value) : value;
 		const now = Date.now();
 		const ttl = ttlSeconds === undefined ? 0 : checkTtlSeconds(ttlSeconds);
 		const graceMs = graceSeconds > 0 ? graceSeconds * 1000 : 0;
@@ -182,7 +239,12 @@ export class MemoryDriver implements TaggableDriver {
 		// the first entry is always the least recently WRITTEN — which is the
 		// order this evicts in.
 		this.#store.delete(key);
-		this.#store.set(key, { value, expiresAt, staleUntil, tags });
+		this.#store.set(key, {
+			value: stored,
+			expiresAt,
+			staleUntil,
+			tags,
+		});
 		this.#enforceCeiling();
 		for (const tag of tags) {
 			let set = this.#tagIndex.get(tag);

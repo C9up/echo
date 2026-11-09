@@ -13,7 +13,10 @@ import "./augmentations.js";
 
 export type { CacheConfig, CacheDriver } from "./CacheManager.js";
 export { CacheManager } from "./CacheManager.js";
-export { MemoryDriver } from "./drivers/MemoryDriver.js";
+export {
+	MemoryDriver,
+	type MemoryDriverOptions,
+} from "./drivers/MemoryDriver.js";
 export type { RedisClient } from "./drivers/RedisDriver.js";
 export { RedisDriver } from "./drivers/RedisDriver.js";
 export type {
