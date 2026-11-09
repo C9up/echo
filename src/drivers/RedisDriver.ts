@@ -70,9 +70,12 @@ export class RedisDriver implements TaggableDriver {
 	#pending: Promise<RedisClient> | undefined;
 	#prefix: string;
 
-	constructor(source: RedisClientSource, prefix = "cache:") {
+	constructor(source: RedisClientSource, prefix?: string) {
 		this.#source = source;
-		this.#prefix = prefix;
+		// `||`, not a default parameter: an empty prefix made clear() scan
+		// `MATCH *` and delete every key in the database. Upstream falls back
+		// the same way (`config.prefix || "bentocache"`).
+		this.#prefix = prefix || "cache:";
 	}
 
 	/**

@@ -3,6 +3,32 @@ import {
 	type RedisClient,
 	RedisDriver,
 } from "../../src/drivers/RedisDriver.js";
+import { drivers } from "../../src/StoreManager.js";
+
+/**
+ * Redis' MATCH glob, as the server reads it: `*`, `?`, `[...]`, and `\`
+ * escaping the next character.
+ */
+function globToRegExp(glob: string): RegExp {
+	let source = "";
+	for (let i = 0; i < glob.length; i++) {
+		const char = glob.charAt(i);
+		if (char === "\\" && i + 1 < glob.length) {
+			i++;
+			source += glob.charAt(i).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+		} else if (char === "*") source += ".*";
+		else if (char === "?") source += ".";
+		else if (char === "[") {
+			const end = glob.indexOf("]", i + 1);
+			if (end === -1) source += "\\[";
+			else {
+				source += `[${glob.slice(i + 1, end)}]`;
+				i = end;
+			}
+		} else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	}
+	return new RegExp(`^${source}$`, "s");
+}
 
 interface ScanState {
 	cursor: number;
@@ -93,10 +119,13 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 		// Capture the keyset at scan start so multi-page iteration is stable
 		// even if the driver deletes keys between SCAN calls.
 		let snapshot: string[] | null = null;
-		client.scan = async (cursor) => {
-			calls.push({ op: "scan", args: [cursor] });
+		client.scan = async (cursor, _match, pattern) => {
+			calls.push({ op: "scan", args: [cursor, pattern] });
 			if (snapshot === null) {
-				snapshot = [...store.keys()].filter((k) => k.startsWith("cache:"));
+				const matcher = globToRegExp(pattern);
+				snapshot = [...store.keys(), ...sets.keys()].filter((k) =>
+					matcher.test(k),
+				);
 			}
 			scanStep.step++;
 			if (totalPages <= 1) {
@@ -339,6 +368,39 @@ describe("echo > RedisDriver > tagging", () => {
 		expect(
 			fake.sets.get("cache:tag:homepage")?.has("cache:article:42") ?? false,
 		).toBe(false);
+	});
+});
+
+describe("echo > RedisDriver > empty prefix (bug 300)", () => {
+	// An empty prefix made clear() scan `MATCH *` and delete every key in the
+	// database: sessions, queue jobs, other applications.
+	it("falls back to the default prefix, so clear() cannot wipe the database", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		fake.store.set("session:abc", "x");
+		fake.store.set("bull:queue:1", "job");
+		const driver = new RedisDriver(fake.client, "");
+		await driver.set("k", 1);
+
+		await driver.flush();
+
+		expect([...fake.store.keys()].sort()).toEqual([
+			"bull:queue:1",
+			"session:abc",
+		]);
+	});
+
+	it("writes under the default prefix", async () => {
+		const fake = createFakeRedis();
+		const driver = new RedisDriver(fake.client, "");
+		await driver.set("k", 1);
+		expect([...fake.store.keys()]).toEqual(["cache:k"]);
+	});
+
+	it("drivers.redis({ prefix: '' }) resolves to the default prefix", async () => {
+		const fake = createFakeRedis();
+		const driver = drivers.redis({ client: fake.client, prefix: "" })();
+		await driver.set("k", 1);
+		expect([...fake.store.keys()]).toEqual(["cache:k"]);
 	});
 });
 
