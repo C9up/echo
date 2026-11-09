@@ -47,6 +47,8 @@ const UNIT_SECONDS: Record<string, number> = {
 	weeks: 604_800,
 };
 
+import { InvalidDurationError } from "./errors.js";
+
 const DURATION_RE = /^\s*(-?\d+(?:\.\d+)?)\s*([a-z]+)?\s*$/i;
 
 /**
@@ -56,14 +58,16 @@ const DURATION_RE = /^\s*(-?\d+(?:\.\d+)?)\s*([a-z]+)?\s*$/i;
 export function parseDuration(value: string): number {
 	const match = DURATION_RE.exec(value);
 	if (!match) {
-		throw new TypeError(`Echo: invalid duration string "${value}"`);
+		throw new InvalidDurationError(`Echo: invalid duration string "${value}"`);
 	}
 	const amount = Number(match[1]);
 	const unit = match[2]?.toLowerCase();
 	if (unit === undefined) return amount;
 	const factor = UNIT_SECONDS[unit];
 	if (factor === undefined) {
-		throw new TypeError(`Echo: unknown duration unit "${unit}" in "${value}"`);
+		throw new InvalidDurationError(
+			`Echo: unknown duration unit "${unit}" in "${value}"`,
+		);
 	}
 	return amount * factor;
 }
@@ -71,9 +75,12 @@ export function parseDuration(value: string): number {
 /**
  * Resolve a {@link Duration} to a TTL in **seconds**.
  *
- * @returns the TTL in seconds; `0` means "never expires" (either an explicit
- *   `null`, or a non-positive value, matching echo's driver convention where
- *   `ttlSeconds <= 0` is treated as immortal).
+ * @returns the TTL in seconds. `0` means "never expires" — an explicit
+ *   `null`, a `0` or `Infinity`. A NEGATIVE result is kept negative: a TTL in
+ *   the past means already expired, and the writers drop the entry rather
+ *   than store it. It used to map to `0`, so a TTL computed from data — a
+ *   token that had already expired — cached its value forever.
+ * @throws {InvalidDurationError} for NaN, which means nothing at all.
  */
 export function resolveTtlSeconds(
 	ttl: Duration | undefined,
@@ -81,6 +88,20 @@ export function resolveTtlSeconds(
 ): number {
 	if (ttl === null) return 0;
 	if (ttl === undefined) return defaultSeconds;
-	const seconds = typeof ttl === "number" ? ttl : parseDuration(ttl);
-	return seconds > 0 ? seconds : 0;
+	return checkTtlSeconds(typeof ttl === "number" ? ttl : parseDuration(ttl));
+}
+
+/**
+ * The driver-level reading of a TTL in seconds: `undefined`, `0` and
+ * `Infinity` never expire, a negative one has already expired, NaN is
+ * refused. Shared by the manager and the drivers, so a driver called directly
+ * cannot turn a NaN into an entry that never expires either.
+ */
+export function checkTtlSeconds(seconds: number): number {
+	if (Number.isNaN(seconds)) {
+		throw new InvalidDurationError(
+			"Echo: a TTL of NaN is not a duration — pass a number of seconds, a string like '5m', or null for no expiry",
+		);
+	}
+	return seconds === Number.POSITIVE_INFINITY ? 0 : seconds;
 }

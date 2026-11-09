@@ -75,12 +75,23 @@ describe("echo > resolving a TTL", () => {
 		expect(resolveTtlSeconds(null, 60)).toBe(0);
 	});
 
-	it("reads a non-positive TTL as never expiring too", () => {
-		// The drivers treat `0` as immortal, so a zero or a negative has to
-		// arrive as that one value rather than as a TTL already in the past.
+	it("reads zero and Infinity as never expiring", () => {
 		expect(resolveTtlSeconds(0, 60)).toBe(0);
-		expect(resolveTtlSeconds(-5, 60)).toBe(0);
-		expect(resolveTtlSeconds("-5s", 60)).toBe(0);
+		expect(resolveTtlSeconds(Number.POSITIVE_INFINITY, 60)).toBe(0);
+	});
+
+	// A TTL computed from data — a token that already expired — mapped to
+	// `0`, which the drivers read as immortal: the opposite of the intent.
+	it("keeps a negative TTL negative: already expired, never immortal", () => {
+		expect(resolveTtlSeconds(-5, 60)).toBe(-5);
+		expect(resolveTtlSeconds("-5m", 60)).toBe(-300);
+		expect(resolveTtlSeconds(Number.NEGATIVE_INFINITY, 60)).toBeLessThan(0);
+	});
+
+	it("refuses NaN with a coded error", () => {
+		expect(() => resolveTtlSeconds(Number.NaN, 60)).toThrow(
+			expect.objectContaining({ code: "E_ECHO_INVALID_DURATION" }),
+		);
 	});
 });
 

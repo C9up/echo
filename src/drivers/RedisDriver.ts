@@ -13,6 +13,7 @@
  * window; `e` records the logical expiry so reads can flag it stale.
  */
 
+import { checkTtlSeconds } from "../duration.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 /**
@@ -226,9 +227,7 @@ export class RedisDriver implements TaggableDriver {
 	}
 
 	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
-		await this.#dropTags(key);
-		const ttl = ttlSeconds && ttlSeconds > 0 ? ttlSeconds : 0;
-		await this.#writeEnvelope(key, value, ttl, ttl);
+		await this.setEntry(key, value, { ttlSeconds });
 	}
 
 	async setEntry(
@@ -237,7 +236,9 @@ export class RedisDriver implements TaggableDriver {
 		options: DriverSetOptions,
 	): Promise<void> {
 		const ttl =
-			options.ttlSeconds && options.ttlSeconds > 0 ? options.ttlSeconds : 0;
+			options.ttlSeconds === undefined
+				? 0
+				: checkTtlSeconds(options.ttlSeconds);
 		const grace =
 			options.graceSeconds && options.graceSeconds > 0
 				? options.graceSeconds
@@ -245,8 +246,16 @@ export class RedisDriver implements TaggableDriver {
 		// With an absolute logical expiry (e.g. `expire()` marking stale-now), the
 		// ttl no longer drives physical retention — keep the value for the grace
 		// window measured from now so a stale-but-graced read still finds it.
-		const override = options.expiresAt;
+		// A negative TTL is the same thing: already expired, never immortal.
+		const override =
+			options.expiresAt ?? (ttl < 0 ? Date.now() - 1 : undefined);
 		const physical = override !== undefined ? grace : ttl > 0 ? ttl + grace : 0;
+		if (override !== undefined && physical === 0 && override <= Date.now()) {
+			// Expired, with no grace to keep it for. Written without a PX it
+			// would never leave; and the previous value must not survive it.
+			await this.delete(key);
+			return;
+		}
 		const tags = options.tags ?? [];
 		if (tags.length === 0) {
 			await this.#dropTags(key);
@@ -386,9 +395,7 @@ export class RedisDriver implements TaggableDriver {
 		tags: string[],
 		ttlSeconds?: number,
 	): Promise<void> {
-		const ttl = ttlSeconds && ttlSeconds > 0 ? ttlSeconds : 0;
-		await this.#writeEnvelope(key, value, ttl, ttl, undefined, tags);
-		await this.#applyTags(key, tags, ttl);
+		await this.setEntry(key, value, { ttlSeconds, tags });
 	}
 
 	/**

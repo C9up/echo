@@ -411,6 +411,23 @@ export class CacheManager {
 				"Echo: caching null/undefined values is not supported",
 			);
 		}
+		if (ttlSeconds < 0) {
+			// A TTL in the past: the value has already expired. Kept only as
+			// a stale copy for its grace window, otherwise dropped — and the
+			// key's previous value with it, which a skipped write would have
+			// left being served. Upstream deletes the same way when the TTL
+			// is not positive and grace is off.
+			if (graceSeconds > 0 && this.#driver.setEntry) {
+				await this.#driver.setEntry(prefixed, value, {
+					expiresAt: Date.now() - 1,
+					graceSeconds,
+					tags: this.#prefixTags(tags),
+				});
+				return;
+			}
+			await this.#driver.delete(prefixed);
+			return;
+		}
 		if (this.#driver.setEntry) {
 			await this.#driver.setEntry(prefixed, value, {
 				ttlSeconds,
@@ -503,7 +520,7 @@ export class CacheManager {
 		if (typeof keyOrOptions === "string") {
 			key = keyOrOptions;
 			val = value;
-			ttl = ttlSeconds ?? this.#defaultTtl;
+			ttl = resolveTtlSeconds(ttlSeconds, this.#defaultTtl);
 			graceSeconds = 0;
 			tags = [];
 		} else {
@@ -634,7 +651,7 @@ export class CacheManager {
 		await this.#writeValue(
 			this.#prefixKey(key),
 			value,
-			ttlSeconds ?? this.#defaultTtl,
+			resolveTtlSeconds(ttlSeconds, this.#defaultTtl),
 			0,
 			tags,
 		);

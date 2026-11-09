@@ -4,6 +4,7 @@
  * as the L1 tier of {@link TieredDriver}.
  */
 
+import { checkTtlSeconds } from "../duration.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 interface StoredEntry {
@@ -147,16 +148,25 @@ export class MemoryDriver implements TaggableDriver {
 			);
 		}
 		const now = Date.now();
-		const hasTtl = ttlSeconds != null && ttlSeconds > 0;
+		const ttl = ttlSeconds === undefined ? 0 : checkTtlSeconds(ttlSeconds);
+		const graceMs = graceSeconds > 0 ? graceSeconds * 1000 : 0;
+		if (expiresAtOverride === undefined && ttl < 0 && graceMs === 0) {
+			// Already expired, and no grace to keep a stale copy for: nothing
+			// to store, and the previous value must not survive it.
+			this.#deleteEntry(key);
+			return;
+		}
 		// An absolute `expiresAtOverride` (e.g. `expire()` marking stale-now) wins
-		// over the ttl-derived expiry; a past value makes the entry immediately stale.
+		// over the ttl-derived expiry; a past value makes the entry immediately
+		// stale. So does a negative TTL — it never reads as "no expiry".
 		const expiresAt =
 			expiresAtOverride !== undefined
 				? expiresAtOverride
-				: hasTtl
-					? now + ttlSeconds * 1000
-					: 0;
-		const graceMs = graceSeconds > 0 ? graceSeconds * 1000 : 0;
+				: ttl < 0
+					? now - 1
+					: ttl > 0
+						? now + ttl * 1000
+						: 0;
 		// A never-expiring entry never goes stale either; otherwise grace extends
 		// physical retention past the logical expiry. Measure grace from the LATER
 		// of the expiry and now, so an already-past expiry still survives its grace.
@@ -204,6 +214,10 @@ export class MemoryDriver implements TaggableDriver {
 	}
 
 	async delete(key: string): Promise<boolean> {
+		return this.#deleteEntry(key);
+	}
+
+	#deleteEntry(key: string): boolean {
 		const entry = this.#store.get(key);
 		if (entry) {
 			for (const tag of entry.tags) {

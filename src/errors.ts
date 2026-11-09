@@ -2,6 +2,19 @@
  * Echo cache errors — bentocache parity (`errors.ts`).
  */
 
+/**
+ * Raised for a duration that cannot mean anything: NaN, or a string the
+ * parser does not read. A `TypeError`, as the parser's refusals always were.
+ */
+export class InvalidDurationError extends TypeError {
+	readonly code = "E_ECHO_INVALID_DURATION";
+
+	constructor(message: string) {
+		super(message);
+		this.name = "InvalidDurationError";
+	}
+}
+
 /** Raised when a factory exceeds its configured `hardTimeout`. */
 export class TimeoutError extends Error {
 	constructor(key: string, timeoutMs: number) {

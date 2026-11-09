@@ -133,18 +133,15 @@ describe("echo > CacheManager > tagging support detection", () => {
 		}
 	});
 
-	it("set() and setWithTags() agree on negative TTL — both treat <=0 as 'no expiration' (audit 2026-05-22)", async () => {
+	it("set() and setWithTags() agree on negative TTL — both read it as already expired", async () => {
 		const driver = new MemoryDriver();
 		try {
-			// Before the fix, `set(k, v, -5)` produced an immortal entry but
-			// `setWithTags(k, v, [tag], -5)` produced an already-expired
-			// entry (because the truthy check let -5 through into
-			// `Date.now() + -5000`). This asymmetry made cache semantics
-			// depend on whether the caller used tags or not.
+			// Once immortal, which is the opposite of a TTL in the past
+			// (bug 318); still the same answer with or without tags.
 			await driver.set("plain", "P", -5);
 			await driver.setWithTags("tagged", "T", ["g"], -5);
-			expect(await driver.get("plain")).toBe("P");
-			expect(await driver.get("tagged")).toBe("T");
+			expect(await driver.get("plain")).toBeNull();
+			expect(await driver.get("tagged")).toBeNull();
 		} finally {
 			driver.destroy();
 		}
