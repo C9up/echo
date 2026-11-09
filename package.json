@@ -26,6 +26,10 @@
     "./testing": {
       "types": "./src/testing/main.ts",
       "import": "./src/testing/main.ts"
+    },
+    "./commands": {
+      "types": "./src/console/index.ts",
+      "import": "./src/console/index.ts"
     }
   },
   "scripts": {
@@ -82,6 +86,10 @@
       "./testing": {
         "types": "./dist/testing/main.d.ts",
         "import": "./dist/testing/main.js"
+      },
+      "./commands": {
+        "types": "./dist/console/index.d.ts",
+        "import": "./dist/console/index.js"
       }
     },
     "access": "public"

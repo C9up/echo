@@ -32,15 +32,20 @@ function renderStub(
 
 function fakeCodemods() {
 	const providers: string[] = [];
+	const commands: string[] = [];
 	const files: Array<{ path: string; content: string }> = [];
 	const env: Record<string, string> = {};
 	return {
 		providers,
+		commands,
 		files,
 		env,
 		codemods: {
 			async addProvider(importPath: string) {
 				providers.push(importPath);
+			},
+			async registerCommand(importPath: string) {
+				commands.push(importPath);
 			},
 			async addEnvVars(vars: Record<string, string>) {
 				Object.assign(env, vars);
@@ -69,6 +74,14 @@ describe("echo > configure", () => {
 
 		expect(providers).toEqual(["@c9up/echo/provider"]);
 		expect(files.map((f) => f.path)).toEqual(["config/cache.ts"]);
+	});
+
+	it("registers the commands the package ships (bug 332)", async () => {
+		const { commands, codemods } = fakeCodemods();
+
+		await configure(codemods);
+
+		expect(commands).toEqual(["@c9up/echo/commands"]);
 	});
 
 	it("declares the environment variables the config reads", async () => {

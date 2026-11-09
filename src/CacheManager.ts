@@ -215,6 +215,11 @@ export class CacheManager {
 		this.#shared = shared ?? { inflight: new Map() };
 	}
 
+	/** The store's name, as events report it (upstream `cache.name`). */
+	get name(): string {
+		return this.#name;
+	}
+
 	#prefixKey(key: string): string {
 		return this.#prefix ? `${this.#prefix}:${key}` : key;
 	}

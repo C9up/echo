@@ -263,6 +263,11 @@ export class CacheStoreManager {
 		}
 	}
 
+	/** The store `use()` answers with no name (upstream `defaultStoreName`). */
+	get defaultStoreName(): string {
+		return this.#config.default;
+	}
+
 	/** Resolve a store by name (or the default). Instances are built once and cached. */
 	use(name?: string): CacheManager {
 		const store = name ?? this.#config.default;

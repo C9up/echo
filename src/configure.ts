@@ -11,6 +11,7 @@ import { stubsRoot } from "./stubs.js";
 
 interface Codemods {
 	addProvider(importPath: string): Promise<void>;
+	registerCommand(importPath: string): Promise<void>;
 	addEnvVars(vars: Record<string, string>): Promise<void>;
 	writeFile(
 		filePath: string,
@@ -34,5 +35,8 @@ export async function configure(codemods: Codemods): Promise<void> {
 	});
 
 	await codemods.addProvider("@c9up/echo/provider");
+	// `cache:clear`, `cache:delete` and `cache:prune` are the package's, not the
+	// binary's: a project reaches them by listing the module.
+	await codemods.registerCommand("@c9up/echo/commands");
 	await codemods.makeUsingStub(stubsRoot, "config/cache.stub");
 }

@@ -40,6 +40,7 @@ async function generatedConfig(): Promise<string> {
 	await configure({
 		addEnvVars: vi.fn(async () => {}),
 		addProvider: vi.fn(async () => {}),
+		registerCommand: vi.fn(async () => {}),
 		writeFile: vi.fn(async (_path: string, contents: string) => {
 			written = contents;
 		}),
