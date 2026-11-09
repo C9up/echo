@@ -255,6 +255,34 @@ describe("echo > the quasar cache bus", () => {
 		expect(seen).toEqual([message]);
 	});
 
+	// A frame that parses but is not a message was handed on as one: a
+	// string `keys` was iterated character by character, an unknown `type`
+	// read as a delete (bug 330).
+	it("drops a frame that is JSON but not an invalidation message", async () => {
+		const socket = pubsub();
+		mockQuasar({ default: { connection: () => socket } });
+		const seen: BusMessage[] = [];
+
+		const bus = (await load())();
+		bus.subscribe((m) => seen.push(m));
+		await vi.waitFor(() => expect(socket.handlers.size).toBe(1));
+
+		const handler = socket.handlers.get("echo::invalidate");
+		for (const frame of [
+			'{"type":"delete","keys":"user"}',
+			'{"type":"whatever","keys":[]}',
+			'{"type":"delete","keys":[1,2]}',
+			'{"type":"clear"}',
+			'{"type":"clear","keys":[],"prefix":7}',
+			"null",
+			"[]",
+		]) {
+			handler?.(frame);
+		}
+		handler?.(JSON.stringify(message));
+		expect(seen).toEqual([message]);
+	});
+
 	it("takes the manager on the namespace as well as the default export", async () => {
 		const socket = pubsub();
 		mockQuasar({ connection: () => socket });

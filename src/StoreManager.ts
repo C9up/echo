@@ -30,8 +30,18 @@ import type { Duration } from "./duration.js";
 import { quasarBus, quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter, CacheEventMap } from "./types.js";
 
-/** A lazily-instantiated driver (built once per store, on first `use`). */
-export type DriverFactory = () => CacheDriver;
+/**
+ * A lazily-instantiated driver (built once per store, on first `use`). The
+ * store manager passes the store's name, which a tiered driver stamps on its
+ * bus messages so stores sharing a channel leave each other alone.
+ */
+export type DriverFactory = (context?: DriverContext) => CacheDriver;
+
+/** What the store manager tells a driver factory about the store it builds. */
+export interface DriverContext {
+	/** The store's key in the config. */
+	store: string;
+}
 
 export interface StoreConfig {
 	driver: DriverFactory;
@@ -208,11 +218,12 @@ export const drivers = {
 			l2: DriverFactory;
 		} & Omit<TieredDriverOptions, "l1" | "l2">,
 	): DriverFactory {
-		return () =>
+		return (context) =>
 			new TieredDriver({
 				...options,
-				l1: options.l1(),
-				l2: options.l2(),
+				l1: options.l1(context),
+				l2: options.l2(context),
+				store: options.store ?? context?.store,
 			});
 	},
 };
@@ -259,7 +270,7 @@ export class CacheStoreManager {
 			throw new Error(`Echo: unknown cache store "${store}"`);
 		}
 		const cfg = entryOf(declared);
-		const manager = new CacheManager(cfg.driver(), {
+		const manager = new CacheManager(cfg.driver({ store }), {
 			prefix: cfg.prefix,
 			// The store's own, or the one every store inherits.
 			ttl: cfg.ttl ?? this.#config.ttl,

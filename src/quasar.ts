@@ -12,7 +12,11 @@
  */
 
 import type { RedisClient } from "./drivers/RedisDriver.js";
-import type { BusMessage, CacheBus } from "./drivers/TieredDriver.js";
+import {
+	type BusMessage,
+	type CacheBus,
+	isBusMessage,
+} from "./drivers/TieredDriver.js";
 import { quasarConnection as loadQuasarConnection } from "./vendor/quasarConnection.js";
 
 /**
@@ -169,11 +173,15 @@ export function quasarBus(options?: {
 		},
 		async subscribe(handler: (message: BusMessage) => void): Promise<void> {
 			const wrapper = (raw: string): void => {
+				let frame: unknown;
 				try {
-					handler(JSON.parse(raw) as BusMessage);
+					frame = JSON.parse(raw);
 				} catch {
-					/* a malformed frame is not a reason to stop listening */
+					// A malformed frame is not a reason to stop listening.
+					return;
 				}
+				// Anything on the channel reaches here, not only what echo sent.
+				if (isBusMessage(frame)) handler(frame);
 			};
 			// AWAITED, and a reported failure becomes a rejection.
 			//

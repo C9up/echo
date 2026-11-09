@@ -3,8 +3,10 @@ import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import {
 	type BusMessage,
+	type CacheBus,
 	TieredDriver,
 } from "../../src/drivers/TieredDriver.js";
+import { CacheStoreManager, drivers, store } from "../../src/StoreManager.js";
 import type { CacheDriver } from "../../src/types.js";
 
 /**
@@ -536,5 +538,137 @@ describe("echo > a tiered L1 copy promoted from L2 keeps its tags (bug 311)", ()
 		expect((await l1.getEntry("k"))?.tags).toEqual(["a", "b"]);
 		await l1.deleteByTag(["b"]);
 		expect(await l1.get("k")).toBeNull();
+	});
+});
+
+describe("echo > bus messages are checked and scoped to their store (bug 330)", () => {
+	/** A bus that hands raw objects to the handler, as a custom bus may. */
+	function rawBus(): {
+		bus: CacheBus;
+		deliver: (frame: unknown) => void;
+	} {
+		const handlers: Array<(m: BusMessage) => void> = [];
+		return {
+			bus: {
+				publish(message: BusMessage) {
+					for (const handler of handlers) handler(message);
+				},
+				subscribe(handler: (m: BusMessage) => void) {
+					handlers.push(handler);
+				},
+			},
+			deliver(frame: unknown) {
+				for (const handler of handlers)
+					Reflect.apply(handler, undefined, [frame]);
+			},
+		};
+	}
+
+	it("ignores malformed messages without throwing", async () => {
+		const l1 = new MemoryDriver();
+		const { bus, deliver } = rawBus();
+		const tiered = new TieredDriver({ l1, l2: new MemoryDriver(), bus });
+		await tiered.connect();
+		await l1.set("user", 1);
+		await l1.set("u", 1);
+
+		expect(() => {
+			deliver({ type: "delete", keys: "user" });
+			deliver({ type: "whatever" });
+			deliver({ type: "delete" });
+			deliver(null);
+		}).not.toThrow();
+		await settled();
+
+		expect(await l1.get("user")).toBe(1);
+		expect(await l1.get("u")).toBe(1);
+	});
+
+	it("a message from store A does not touch store B's L1", async () => {
+		const shared = echoingBus();
+		const aL1 = new MemoryDriver();
+		const bL1 = new MemoryDriver();
+		const a = new TieredDriver({
+			l1: aL1,
+			l2: new MemoryDriver(),
+			bus: shared.bus,
+			store: "a",
+		});
+		const b = new TieredDriver({
+			l1: bL1,
+			l2: new MemoryDriver(),
+			bus: shared.bus,
+			store: "b",
+		});
+		await a.connect();
+		await b.connect();
+		await b.set("config", "b-config", 60);
+
+		await a.set("config", "a-config", 60);
+		await a.deleteByTag([]);
+		await settled();
+
+		expect(await bL1.get("config")).toBe("b-config");
+		expect(shared.seen.every((m) => m.store === "a" || m.store === "b")).toBe(
+			true,
+		);
+	});
+
+	it("a peer of the same store still acts on it", async () => {
+		const shared = echoingBus();
+		const l2 = new MemoryDriver();
+		const peerL1 = new MemoryDriver();
+		const a = new TieredDriver({
+			l1: new MemoryDriver(),
+			l2,
+			bus: shared.bus,
+			store: "s",
+		});
+		const peer = new TieredDriver({
+			l1: peerL1,
+			l2,
+			bus: shared.bus,
+			store: "s",
+		});
+		await a.connect();
+		await peer.connect();
+		await peerL1.set("k", "old");
+
+		await a.delete("k");
+		await settled();
+
+		expect(await peerL1.get("k")).toBeNull();
+	});
+
+	it("stores built by the manager are named after their config key", async () => {
+		const shared = echoingBus();
+		const manager = new CacheStoreManager({
+			default: "one",
+			stores: {
+				one: store()
+					.useL1Layer(drivers.memory())
+					.useL2Layer(drivers.memory())
+					.useBus(shared.bus),
+				two: store()
+					.useL1Layer(drivers.memory())
+					.useL2Layer(drivers.memory())
+					.useBus(shared.bus),
+			},
+		});
+		try {
+			await manager.connectAll();
+			const one = manager.use("one");
+			const two = manager.use("two");
+			await one.connect();
+			await two.connect();
+			await two.set({ key: "config", value: "two" });
+
+			await one.set({ key: "config", value: "one" });
+			await settled();
+
+			expect(shared.seen.map((m) => m.store)).toEqual(["two", "one"]);
+		} finally {
+			await manager.disconnectAll();
+		}
 	});
 });

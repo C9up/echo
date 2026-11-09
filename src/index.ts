@@ -24,7 +24,7 @@ export type {
 	CacheBus,
 	TieredDriverOptions,
 } from "./drivers/TieredDriver.js";
-export { TieredDriver } from "./drivers/TieredDriver.js";
+export { isBusMessage, TieredDriver } from "./drivers/TieredDriver.js";
 export type { Duration } from "./duration.js";
 export { parseDuration, resolveTtlSeconds } from "./duration.js";
 export type { EchoProviderConfig } from "./EchoProvider.js";
@@ -38,6 +38,7 @@ export {
 } from "./errors.js";
 export {
 	CacheStoreManager,
+	type DriverContext,
 	type DriverFactory,
 	drivers,
 	type MultiStoreConfig,

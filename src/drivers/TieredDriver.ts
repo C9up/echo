@@ -47,6 +47,40 @@ export interface BusMessage {
 	 * already did.
 	 */
 	senderId?: string;
+	/**
+	 * The store that published it. Several stores — and several applications
+	 * — can share one channel, and a message carried no store: one store's
+	 * write dropped another store's L1 copy of the same key, and its
+	 * deleteByTag flushed every other store's L1. A tier with a store name
+	 * acts only on messages carrying the same one, as upstream drops messages
+	 * for caches it does not manage.
+	 */
+	store?: string;
+}
+
+/**
+ * Whether a received frame is an invalidation message, field by field.
+ *
+ * A bus hands over whatever arrived on the channel. Trusted as is, a string
+ * `keys` was iterated character by character, any unknown `type` read as a
+ * delete, and a missing `keys` threw inside the handler.
+ */
+export function isBusMessage(value: unknown): value is BusMessage {
+	if (typeof value !== "object" || value === null) return false;
+	const type = Reflect.get(value, "type");
+	const keys = Reflect.get(value, "keys");
+	const optional = (name: string): boolean => {
+		const field = Reflect.get(value, name);
+		return field === undefined || typeof field === "string";
+	};
+	return (
+		(type === "delete" || type === "clear") &&
+		Array.isArray(keys) &&
+		keys.every((key) => typeof key === "string") &&
+		optional("prefix") &&
+		optional("senderId") &&
+		optional("store")
+	);
 }
 
 /** Duck-typed pub/sub bus for cross-instance L1 invalidation (e.g. Redis pub/sub). */
@@ -101,6 +135,12 @@ export interface TieredDriverOptions {
 	 * Off by default.
 	 */
 	l2CircuitBreakerDuration?: Duration;
+	/**
+	 * The store this tier belongs to, stamped on what it publishes and
+	 * required on what it acts on. Set by the store manager from the config
+	 * key; a tier without one acts on every well-formed message.
+	 */
+	store?: string;
 }
 
 function isTaggable(driver: CacheDriver): driver is TaggableDriver {
@@ -168,6 +208,7 @@ export class TieredDriver implements TaggableDriver {
 	/** This tier, as a bus sender. */
 	readonly #id = crypto.randomUUID();
 
+	readonly #store: string | undefined;
 	readonly #suppressL2Errors: boolean;
 	/** How long the breaker stays open after an L2 failure; `0` for no breaker. */
 	readonly #breakerMs: number;
@@ -184,10 +225,15 @@ export class TieredDriver implements TaggableDriver {
 		this.#breakerMs =
 			Math.max(0, resolveTtlSeconds(options.l2CircuitBreakerDuration, 0)) *
 			1000;
+		this.#store = options.store;
 		this.#onPeerMessage = (message: BusMessage): void => {
+			// Checked here and not only in the transport: a custom bus hands
+			// over whatever it received.
+			if (!isBusMessage(message)) return;
 			// Our own invalidation, come back round the bus. Acting on it would
 			// undo the write that sent it.
 			if (message.senderId === this.#id) return;
+			if (this.#store !== undefined && message.store !== this.#store) return;
 			// Peer invalidation: only the local L1 needs clearing (L2 is shared).
 			if (message.type === "clear") {
 				this.#invalidate("flush", () => this.#l1.flush(message.prefix));
@@ -386,6 +432,7 @@ export class TieredDriver implements TaggableDriver {
 				type: "delete",
 				keys: [key],
 				senderId: this.#id,
+				store: this.#store,
 			});
 		}
 		if (!l1.ok) throw l1.error;
@@ -400,6 +447,7 @@ export class TieredDriver implements TaggableDriver {
 				type: "delete",
 				keys: [key],
 				senderId: this.#id,
+				store: this.#store,
 			});
 		}
 		if (!l1.ok) throw l1.error;
@@ -419,6 +467,7 @@ export class TieredDriver implements TaggableDriver {
 				keys: [],
 				prefix,
 				senderId: this.#id,
+				store: this.#store,
 			});
 		}
 		if (!l1.ok) throw l1.error;
@@ -453,7 +502,12 @@ export class TieredDriver implements TaggableDriver {
 		// Peers can't map tags → keys locally; broadcast a clear so their L1 drops
 		// any tagged copies (conservative but correct).
 		if (shared.ok) {
-			await this.#bus?.publish({ type: "clear", keys: [], senderId: this.#id });
+			await this.#bus?.publish({
+				type: "clear",
+				keys: [],
+				senderId: this.#id,
+				store: this.#store,
+			});
 		}
 		if (!local.ok) throw local.error;
 		if (!shared.ok) throw shared.error;
