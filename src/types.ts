@@ -20,6 +20,13 @@ export interface CacheEntry<T = unknown> {
 	 * promotes an entry between tiers instead of resetting it to immortal.
 	 */
 	expiresAt?: number;
+	/**
+	 * The tags the entry was written with, when the driver keeps them. A
+	 * composing driver needs them to promote an entry between tiers: a
+	 * promoted copy written without its tags was invisible to `deleteByTag`
+	 * on the very instance that promoted it.
+	 */
+	tags?: string[];
 }
 
 /** Options for the grace-aware {@link CacheDriver.setEntry}. */

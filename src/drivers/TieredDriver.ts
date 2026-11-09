@@ -240,7 +240,10 @@ export class TieredDriver implements TaggableDriver {
 				// immortal L1 copy; skip promotion rather than cache it forever.
 				return l2;
 			}
-			const opts: DriverSetOptions = {};
+			// With its tags: a copy promoted without them was invisible to
+			// deleteByTag on this very instance, which skips its own bus
+			// message — so a revoked entry kept being served from here.
+			const opts: DriverSetOptions = l2.tags ? { tags: l2.tags } : {};
 			if (l2.expiresAt > 0) {
 				const remainingSeconds = (l2.expiresAt - Date.now()) / 1000;
 				// Raced past expiry between the stale check and now — don't promote

@@ -12,10 +12,12 @@
 import { QuasarManager } from "@c9up/quasar";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
+import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import {
 	type RedisClient,
 	RedisDriver,
 } from "../../src/drivers/RedisDriver.js";
+import { TieredDriver } from "../../src/drivers/TieredDriver.js";
 
 const url = process.env.REDIS_TEST_URL ?? "";
 
@@ -158,6 +160,30 @@ describeRedis("echo on a raw ioredis client", () => {
 
 			expect(await a.get({ key: "doc" })).toBeUndefined();
 			expect(await b.get({ key: "doc" })).toBe("B");
+		});
+	});
+
+	describe("tiered promotion from a Redis L2 keeps tags (bug 311)", () => {
+		it("deleteByTag on the promoting instance drops its own L1 copy", async () => {
+			const l1A = new MemoryDriver();
+			const l1B = new MemoryDriver();
+			const a = new CacheManager(
+				new TieredDriver({ l1: l1A, l2: new RedisDriver(client, base) }),
+			);
+			const b = new CacheManager(
+				new TieredDriver({ l1: l1B, l2: new RedisDriver(client, base) }),
+			);
+			try {
+				await a.set({ key: "perm:42", value: "can-delete", tags: ["user:42"] });
+				expect(await b.get({ key: "perm:42" })).toBe("can-delete");
+
+				await b.deleteByTag({ tags: ["user:42"] });
+
+				expect(await b.get({ key: "perm:42" })).toBeUndefined();
+			} finally {
+				l1A.destroy();
+				l1B.destroy();
+			}
 		});
 	});
 

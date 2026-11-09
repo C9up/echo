@@ -494,3 +494,45 @@ describe("echo > a tiered driver lets go of the bus", () => {
 		expect(attempts).toBe(2);
 	});
 });
+
+describe("echo > a tiered L1 copy promoted from L2 keeps its tags (bug 311)", () => {
+	it("deleteByTag on the instance that promoted drops its own copy", async () => {
+		const l2 = new MemoryDriver();
+		const { bus } = echoingBus();
+		const a = new TieredDriver({ l1: new MemoryDriver(), l2, bus });
+		const bL1 = new MemoryDriver();
+		const b = new TieredDriver({ l1: bL1, l2, bus });
+		await a.connect();
+		await b.connect();
+		const cacheA = new CacheManager(a);
+		const cacheB = new CacheManager(b);
+
+		await cacheA.set({
+			key: "perm:42",
+			value: "can-delete",
+			tags: ["user:42"],
+		});
+		// Promotes the L2 hit into B's L1.
+		expect(await cacheB.get({ key: "perm:42" })).toBe("can-delete");
+		expect(await bL1.get("perm:42")).toBe("can-delete");
+
+		await cacheB.deleteByTag({ tags: ["user:42"] });
+		await settled();
+
+		expect(await cacheB.get({ key: "perm:42" })).toBeUndefined();
+		expect(await cacheA.get({ key: "perm:42" })).toBeUndefined();
+	});
+
+	it("the promoted entry carries the tags the L2 entry was written with", async () => {
+		const l1 = new MemoryDriver();
+		const l2 = new MemoryDriver();
+		const tiered = new TieredDriver({ l1, l2 });
+		await l2.setEntry("k", "v", { ttlSeconds: 60, tags: ["a", "b"] });
+
+		await tiered.getEntry("k");
+
+		expect((await l1.getEntry("k"))?.tags).toEqual(["a", "b"]);
+		await l1.deleteByTag(["b"]);
+		expect(await l1.get("k")).toBeNull();
+	});
+});

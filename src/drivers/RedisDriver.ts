@@ -43,11 +43,17 @@ export interface RedisClient {
 interface Envelope {
 	v: unknown;
 	e: number;
+	/** Tags, so a tier above can promote the entry with them. */
+	t?: string[];
 }
 
 /** Escape Redis MATCH glob metacharacters so the pattern matches literally. */
 function escapeGlob(literal: string): string {
 	return literal.replace(/[*?[\]\\]/g, "\\$&");
+}
+
+function isStringArray(x: unknown): x is string[] {
+	return Array.isArray(x) && x.every((item) => typeof item === "string");
 }
 
 function isEnvelope(x: unknown): x is Envelope {
@@ -162,7 +168,13 @@ export class RedisDriver implements TaggableDriver {
 		// caller's generic `T` is the assertion. This is the single unavoidable
 		// cast site (mirrors echo <=0.1.5 `JSON.parse(raw) as T`).
 		const value = parsed.v as T;
-		return { value, stale, expiresAt: parsed.e };
+		const tags = Reflect.get(parsed, "t");
+		return {
+			value,
+			stale,
+			expiresAt: parsed.e,
+			...(isStringArray(tags) && tags.length > 0 ? { tags } : {}),
+		};
 	}
 
 	/** Write the value envelope with a physical (grace-inclusive) TTL in seconds. */
@@ -172,6 +184,7 @@ export class RedisDriver implements TaggableDriver {
 		logicalTtlSeconds: number,
 		physicalTtlSeconds: number,
 		logicalExpiresAtOverride?: number,
+		tags: string[] = [],
 	): Promise<void> {
 		const client = await this.#client();
 		// An absolute override (e.g. `expire()` marking stale-now) wins over the
@@ -182,7 +195,10 @@ export class RedisDriver implements TaggableDriver {
 				: logicalTtlSeconds > 0
 					? Date.now() + logicalTtlSeconds * 1000
 					: 0;
-		const envelope: Envelope = { v: value, e: expiresAt };
+		const envelope: Envelope =
+			tags.length > 0
+				? { v: value, e: expiresAt, t: tags }
+				: { v: value, e: expiresAt };
 		const serialized = JSON.stringify(envelope);
 		if (physicalTtlSeconds > 0) {
 			await client.set(
@@ -235,7 +251,7 @@ export class RedisDriver implements TaggableDriver {
 			await this.#writeEnvelope(key, value, ttl, physical, override);
 			return;
 		}
-		await this.#writeEnvelope(key, value, ttl, physical, override);
+		await this.#writeEnvelope(key, value, ttl, physical, override, tags);
 		await this.#applyTags(key, tags, physical);
 	}
 
@@ -366,7 +382,7 @@ export class RedisDriver implements TaggableDriver {
 		ttlSeconds?: number,
 	): Promise<void> {
 		const ttl = ttlSeconds && ttlSeconds > 0 ? ttlSeconds : 0;
-		await this.#writeEnvelope(key, value, ttl, ttl);
+		await this.#writeEnvelope(key, value, ttl, ttl, undefined, tags);
 		await this.#applyTags(key, tags, ttl);
 	}
 

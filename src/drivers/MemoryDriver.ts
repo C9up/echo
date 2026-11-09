@@ -114,7 +114,12 @@ export class MemoryDriver implements TaggableDriver {
 			return null;
 		}
 		const stale = entry.expiresAt > 0 && entry.expiresAt < now;
-		return { value: entry.value as T, stale, expiresAt: entry.expiresAt };
+		return {
+			value: entry.value as T,
+			stale,
+			expiresAt: entry.expiresAt,
+			tags: [...entry.tags],
+		};
 	}
 
 	/**
