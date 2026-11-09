@@ -4,7 +4,7 @@
  */
 
 import type { Duration } from "./duration.js";
-import type { FactoryError } from "./errors.js";
+import type { FactoryError, LockTimeoutError } from "./errors.js";
 
 /**
  * A driver-level entry. `stale` is `true` when the value is past its logical
@@ -151,7 +151,11 @@ export interface GetOrSetOptions<T> {
 	timeout?: Duration;
 	/** Hard timeout: reject with {@link TimeoutError} if the factory exceeds it (even without a stale fallback). */
 	hardTimeout?: Duration;
-	/** Max time to wait on another caller's in-flight factory before falling back to stale (single-flight lock). */
+	/**
+	 * Max time to wait on another caller's in-flight factory for the same key
+	 * (single-flight lock). Past it the stale value is returned when there is
+	 * one, and a {@link LockTimeoutError} is thrown when there is not.
+	 */
 	lockTimeout?: Duration;
 	tags?: string[];
 	/** Observe factory failures (foreground and background). */

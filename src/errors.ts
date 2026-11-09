@@ -29,6 +29,23 @@ export class InvalidDurationError extends TypeError {
 	}
 }
 
+/**
+ * Raised when a caller waited `lockTimeout` on another caller's factory for
+ * the same key, had no stale value to fall back on, and gave up.
+ */
+export class LockTimeoutError extends EchoError {
+	/** The cache key whose lock was not obtained. */
+	readonly key: string;
+
+	constructor(key: string, timeoutMs: number) {
+		super(
+			"E_ECHO_LOCK_TIMEOUT",
+			`Echo: waited ${timeoutMs}ms for another caller's factory for "${key}" and gave up`,
+		);
+		this.key = key;
+	}
+}
+
 /** Raised when a factory exceeds its configured `hardTimeout`. */
 export class TimeoutError extends Error {
 	constructor(key: string, timeoutMs: number) {

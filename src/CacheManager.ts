@@ -10,7 +10,7 @@
  */
 
 import { type Duration, parseDuration, resolveTtlSeconds } from "./duration.js";
-import { FactoryError, TimeoutError } from "./errors.js";
+import { FactoryError, LockTimeoutError, TimeoutError } from "./errors.js";
 import type {
 	CacheEmitter,
 	CacheEntry,
@@ -810,6 +810,8 @@ export class CacheManager {
 		const staleValue = hasStale ? entry.value : undefined;
 
 		let record = this.#shared.inflight.get(prefixed);
+		// Joining another caller's factory, rather than running our own.
+		const joined = record !== undefined;
 		if (!record) {
 			record = {
 				promise: this.#invokeFactory<T>(prefixed, o, hasStale, staleValue),
@@ -841,10 +843,22 @@ export class CacheManager {
 			return result;
 		}
 
-		if (o.hardTimeoutMs !== undefined) {
-			const result = await withTimeout(factoryPromise, o.hardTimeoutMs);
+		// A joiner waits at most `lockTimeout` for the leader, stale value or
+		// not, as upstream bounds its lock acquisition either way. It was read
+		// on the stale path only, so behind a factory that hung every caller
+		// for the key waited forever. The leader is not bound by it: it holds
+		// the lock, and `hardTimeout` is what bounds its factory.
+		const lockMs = joined ? o.lockTimeoutMs : undefined;
+		const hardMs = o.hardTimeoutMs;
+		if (lockMs !== undefined && (hardMs === undefined || lockMs < hardMs)) {
+			const result = await withTimeout(factoryPromise, lockMs);
+			if (result === TIMEOUT) throw new LockTimeoutError(o.key, lockMs);
+			return result;
+		}
+		if (hardMs !== undefined) {
+			const result = await withTimeout(factoryPromise, hardMs);
 			if (result === TIMEOUT) {
-				throw new TimeoutError(o.key, o.hardTimeoutMs);
+				throw new TimeoutError(o.key, hardMs);
 			}
 			return result;
 		}

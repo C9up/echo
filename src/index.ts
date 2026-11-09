@@ -28,7 +28,13 @@ export { TieredDriver } from "./drivers/TieredDriver.js";
 export type { Duration } from "./duration.js";
 export { parseDuration, resolveTtlSeconds } from "./duration.js";
 export type { EchoProviderConfig } from "./EchoProvider.js";
-export { FactoryError, TimeoutError } from "./errors.js";
+export {
+	EchoError,
+	FactoryError,
+	InvalidDurationError,
+	LockTimeoutError,
+	TimeoutError,
+} from "./errors.js";
 export {
 	CacheStoreManager,
 	type DriverFactory,
