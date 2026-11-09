@@ -139,10 +139,25 @@ describeRedis("echo on a raw ioredis client", () => {
 			expect(left.some((key) => key.includes("tenantB"))).toBe(false);
 			expect(await root.namespace("tenantA").get({ key: "doc" })).toBe(1);
 			// tenantA's entry is still reachable by its tag.
-			await root.deleteByTag({ tags: ["t"] });
+			await root.namespace("tenantA").deleteByTag({ tags: ["t"] });
 			expect(await root.namespace("tenantA").get({ key: "doc" })).toBe(
 				undefined,
 			);
+		});
+	});
+
+	describe("tags scoped to their namespace (bug 306)", () => {
+		it("deleteByTag in one namespace leaves another namespace's entries", async () => {
+			const root = new CacheManager(new RedisDriver(client, base));
+			const a = root.namespace("tenantA");
+			const b = root.namespace("tenantB");
+			await a.set({ key: "doc", value: "A", tags: ["user:1"] });
+			await b.set({ key: "doc", value: "B", tags: ["user:1"] });
+
+			await a.deleteByTag({ tags: ["user:1"] });
+
+			expect(await a.get({ key: "doc" })).toBeUndefined();
+			expect(await b.get({ key: "doc" })).toBe("B");
 		});
 	});
 

@@ -47,3 +47,44 @@ describe("echo > namespace clear() with glob characters (bug 303)", () => {
 		});
 	}
 });
+
+describe("echo > tags are scoped to their namespace (bug 306)", () => {
+	it("deleteByTag in one namespace leaves another namespace's entries", async () => {
+		const cache = root();
+		const a = cache.namespace("tenantA");
+		const b = cache.namespace("tenantB");
+		await a.set({ key: "profile", value: "A", tags: ["user:1"] });
+		await b.set({ key: "profile", value: "B", tags: ["user:1"] });
+
+		await a.deleteByTag({ tags: ["user:1"] });
+
+		expect(await a.get({ key: "profile" })).toBeUndefined();
+		expect(await b.get({ key: "profile" })).toBe("B");
+	});
+
+	it("a root deleteByTag does not reach into a namespace", async () => {
+		const cache = root();
+		await cache.set({ key: "profile", value: "root", tags: ["user:1"] });
+		await cache
+			.namespace("tenantA")
+			.set({ key: "profile", value: "A", tags: ["user:1"] });
+
+		await cache.deleteByTag({ tags: ["user:1"] });
+
+		expect(await cache.get({ key: "profile" })).toBeUndefined();
+		expect(await cache.namespace("tenantA").get({ key: "profile" })).toBe("A");
+	});
+
+	it("setWithTags and getOrSet tag inside the namespace too", async () => {
+		const cache = root();
+		const a = cache.namespace("tenantA");
+		const b = cache.namespace("tenantB");
+		await a.setWithTags("doc", "A", ["t"]);
+		await b.getOrSet({ key: "doc", factory: () => "B", tags: ["t"] });
+
+		await b.deleteByTag(["t"]);
+
+		expect(await a.get({ key: "doc" })).toBe("A");
+		expect(await b.get({ key: "doc" })).toBeUndefined();
+	});
+});

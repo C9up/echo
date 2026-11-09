@@ -187,6 +187,16 @@ export class CacheManager {
 		return this.#prefix ? `${this.#prefix}:${key}` : key;
 	}
 
+	/**
+	 * Tags live inside the namespace, exactly as keys do. They reached the
+	 * driver bare, into one store-wide index, so `tenantA.deleteByTag(['user:1'])`
+	 * also dropped tenantB's entries tagged `user:1`. Upstream scopes them the
+	 * same way: its tag invalidations are entries of the namespaced stack.
+	 */
+	#prefixTags(tags: string[]): string[] {
+		return tags.map((tag) => this.#prefixKey(tag));
+	}
+
 	#emit<E extends keyof CacheEventMap>(
 		event: E,
 		payload: CacheEventMap[E],
@@ -405,7 +415,7 @@ export class CacheManager {
 			await this.#driver.setEntry(prefixed, value, {
 				ttlSeconds,
 				graceSeconds,
-				tags,
+				tags: this.#prefixTags(tags),
 			});
 			return;
 		}
@@ -415,7 +425,12 @@ export class CacheManager {
 					"Echo: the configured driver does not support tag-based invalidation",
 				);
 			}
-			await this.#driver.setWithTags(prefixed, value, tags, ttlSeconds);
+			await this.#driver.setWithTags(
+				prefixed,
+				value,
+				this.#prefixTags(tags),
+				ttlSeconds,
+			);
 			return;
 		}
 		await this.#driver.set(prefixed, value, ttlSeconds);
@@ -641,10 +656,11 @@ export class CacheManager {
 				"Echo: the configured driver does not support tag-based invalidation",
 			);
 		}
+		const scoped = this.#prefixTags(tags);
 		if (typeof this.#driver.deleteByTag === "function") {
-			return this.#driver.deleteByTag(tags);
+			return this.#driver.deleteByTag(scoped);
 		}
-		return this.#driver.flushTags(tags);
+		return this.#driver.flushTags(scoped);
 	}
 
 	/** @deprecated alias of {@link deleteByTag}. */
