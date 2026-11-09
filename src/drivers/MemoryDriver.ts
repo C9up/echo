@@ -243,9 +243,30 @@ export class MemoryDriver implements TaggableDriver {
 	 * into a wrong-purge under deleteByTag (audit 2026-06-13).
 	 */
 	#evict(key: string, entry: StoredEntry): void {
-		for (const tag of entry.tags) this.#tagIndex.get(tag)?.delete(key);
+		this.#untag(key, entry.tags);
 		this.#store.delete(key);
 		this.#size -= entry.size;
+	}
+
+	/**
+	 * Take `key` out of each tag's set, and drop a set it leaves empty.
+	 *
+	 * Emptied sets were kept, so per-user or per-id tags grew the index by one
+	 * set per entry ever written: a store capped at ten entries held hundreds
+	 * of megabytes of empty sets.
+	 */
+	#untag(key: string, tags: string[]): void {
+		for (const tag of tags) {
+			const keys = this.#tagIndex.get(tag);
+			if (keys === undefined) continue;
+			keys.delete(key);
+			if (keys.size === 0) this.#tagIndex.delete(tag);
+		}
+	}
+
+	/** How many tags the index holds — what bounds its memory, for diagnostics. */
+	tagCount(): number {
+		return this.#tagIndex.size;
 	}
 
 	#write(
@@ -359,10 +380,6 @@ export class MemoryDriver implements TaggableDriver {
 		}
 		for (const [key, entry] of [...this.#store]) {
 			if (key.startsWith(prefix)) this.#evict(key, entry);
-		}
-		// The tag index points at keys; the ones that are gone go with them.
-		for (const [tag, keys] of [...this.#tagIndex.entries()]) {
-			if (keys.size === 0) this.#tagIndex.delete(tag);
 		}
 	}
 

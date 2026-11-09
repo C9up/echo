@@ -117,3 +117,57 @@ describe("echo > memory driver byte bounds (bug 322)", () => {
 		);
 	});
 });
+
+describe("echo > memory driver tag index stays bounded (bug 323)", () => {
+	// Each removal left its emptied tag Set behind, so per-id tags grew the
+	// index forever under a store whose entry count was capped.
+	it("eviction drops the tags it emptied", async () => {
+		const driver = track(new MemoryDriver({ maxItems: 10 }));
+		for (let i = 0; i < 100; i++) {
+			await driver.setWithTags(`k${i}`, i, [`tag-${i}`]);
+		}
+		expect(driver.tagCount()).toBe(10);
+	});
+
+	it("delete() and an untagged overwrite drop the tags they emptied", async () => {
+		const driver = track(new MemoryDriver());
+		await driver.setWithTags("a", 1, ["ta"]);
+		await driver.setWithTags("b", 1, ["tb"]);
+
+		await driver.delete("a");
+		await driver.set("b", 2);
+
+		expect(driver.tagCount()).toBe(0);
+	});
+
+	it("expiry drops the tags it emptied", async () => {
+		const driver = track(new MemoryDriver());
+		await driver.setWithTags("a", 1, ["ta"], 0.001);
+		await new Promise((resolve) => setTimeout(resolve, 10));
+
+		await driver.prune();
+
+		expect(driver.tagCount()).toBe(0);
+	});
+
+	it("deleteByTag drops every tag its keys emptied, not only the ones named", async () => {
+		const driver = track(new MemoryDriver());
+		await driver.setWithTags("a", 1, ["x", "y"]);
+
+		await driver.deleteByTag(["x"]);
+
+		expect(driver.tagCount()).toBe(0);
+	});
+
+	it("a tag still carried by another key stays", async () => {
+		const driver = track(new MemoryDriver());
+		await driver.setWithTags("a", 1, ["shared"]);
+		await driver.setWithTags("b", 1, ["shared"]);
+
+		await driver.delete("a");
+
+		expect(driver.tagCount()).toBe(1);
+		await driver.deleteByTag(["shared"]);
+		expect(await driver.get("b")).toBeNull();
+	});
+});
