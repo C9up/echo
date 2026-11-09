@@ -3,6 +3,20 @@
  */
 
 /**
+ * Base class for the errors echo raises with a code of its own, so a caller
+ * can match on `error.code`.
+ */
+export class EchoError extends Error {
+	readonly code: string;
+
+	constructor(code: string, message: string, options?: ErrorOptions) {
+		super(message, options);
+		this.name = new.target.name;
+		this.code = code;
+	}
+}
+
+/**
  * Raised for a duration that cannot mean anything: NaN, or a string the
  * parser does not read. A `TypeError`, as the parser's refusals always were.
  */

@@ -4,14 +4,31 @@
  * as the L1 tier of {@link TieredDriver}.
  */
 
+import { parseBytes } from "../bytes.js";
 import { checkTtlSeconds } from "../duration.js";
+import { EchoError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 export interface MemoryDriverOptions {
 	/** How often expired entries are swept, in milliseconds (default 60 000). */
 	sweepIntervalMs?: number;
-	/** Entry ceiling; `0` for none. */
+	/**
+	 * How many entries the store holds before it evicts the least recently
+	 * used. Default 1000, as upstream; `0` or `Infinity` for no ceiling.
+	 */
 	maxItems?: number;
+	/**
+	 * Total size of the stored values, in bytes or as `'10mb'`; past it the
+	 * least recently used entries go. Needs `serialize`, since it measures
+	 * the JSON.
+	 */
+	maxSize?: number | string;
+	/**
+	 * Largest single value, in bytes or as `'1mb'`. A bigger one is not
+	 * stored, and the key's previous value goes with it. Defaults to
+	 * `maxSize` when that is set. Needs `serialize`.
+	 */
+	maxEntrySize?: number | string;
 	/**
 	 * Store values as JSON and hand out a fresh copy on every read (default).
 	 *
@@ -30,6 +47,8 @@ interface StoredEntry {
 	/** Physical eviction (epoch ms); `0` means never. Grace window ends here. */
 	staleUntil: number;
 	tags: string[];
+	/** Bytes of JSON; `0` when the driver keeps references. */
+	size: number;
 }
 
 /** The JSON a value is stored as; refused when JSON cannot carry it. */
@@ -48,15 +67,20 @@ export class MemoryDriver implements TaggableDriver {
 	#tagIndex: Map<string, Set<string>> = new Map();
 	#sweepInterval: ReturnType<typeof setInterval>;
 	/**
-	 * How many entries this driver holds before it starts dropping the oldest.
+	 * How many entries this driver holds before it evicts.
 	 *
-	 * Eviction was by TTL alone, which bounds how long an entry lives and not
-	 * how many there are: a cache keyed by anything unbounded — a user id, a
-	 * search term — grew until the process ran out of memory, and only a key
-	 * that was written ever left. `0` keeps the old behaviour for a caller that
-	 * genuinely wants no ceiling.
+	 * 1000 unless told otherwise, as upstream's LRU. It had no ceiling by
+	 * default, so a cache keyed by anything a user controls — an id, a search
+	 * term — grew until the process ran out of memory. `0` is an explicit "no
+	 * ceiling".
 	 */
 	readonly #maxItems: number;
+	/** Byte bound on all values together; `0` for none. */
+	readonly #maxSize: number;
+	/** Byte bound on one value; `0` for none. */
+	readonly #maxEntrySize: number;
+	/** Bytes held, kept in step with every write and removal. */
+	#size = 0;
 	/**
 	 * Whether values go in as JSON and come out as a copy.
 	 *
@@ -72,14 +96,37 @@ export class MemoryDriver implements TaggableDriver {
 	 * @param options the options, or the sweep interval in milliseconds (the
 	 *   original positional form, kept with `maxItems` beside it).
 	 */
-	constructor(options: MemoryDriverOptions | number = {}, maxItems = 0) {
+	constructor(options: MemoryDriverOptions | number = {}, maxItems?: number) {
 		const config: MemoryDriverOptions =
 			typeof options === "number"
 				? { sweepIntervalMs: options, maxItems }
 				: options;
-		const ceiling = config.maxItems ?? 0;
-		this.#maxItems = ceiling > 0 ? ceiling : 0;
+		const ceiling = config.maxItems ?? 1000;
+		if (Number.isNaN(ceiling) || ceiling < 0) {
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
+				`Echo: maxItems must be a count, 0 or Infinity for no ceiling — got ${String(ceiling)}`,
+			);
+		}
+		this.#maxItems = Number.isFinite(ceiling) ? ceiling : 0;
 		this.#serialize = config.serialize ?? true;
+		if (
+			!this.#serialize &&
+			(config.maxSize !== undefined || config.maxEntrySize !== undefined)
+		) {
+			// What it would measure is the JSON, and a driver keeping
+			// references has none. Upstream refuses the same combination.
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
+				"Echo: maxSize and maxEntrySize measure the stored JSON, so they need `serialize` — drop `serialize: false` or the byte bound",
+			);
+		}
+		this.#maxSize =
+			config.maxSize === undefined ? 0 : parseBytes(config.maxSize, "maxSize");
+		this.#maxEntrySize =
+			config.maxEntrySize === undefined
+				? this.#maxSize
+				: parseBytes(config.maxEntrySize, "maxEntrySize");
 		this.#sweepInterval = setInterval(
 			() => this.#sweep(),
 			config.sweepIntervalMs ?? 60_000,
@@ -92,24 +139,32 @@ export class MemoryDriver implements TaggableDriver {
 		}
 	}
 
+	#fits(): boolean {
+		return (
+			(this.#maxItems === 0 || this.#store.size <= this.#maxItems) &&
+			(this.#maxSize === 0 || this.#size <= this.#maxSize)
+		);
+	}
+
 	/**
-	 * Drop the oldest entries until the store fits under its ceiling.
+	 * Drop entries until the store fits under its ceilings.
 	 *
 	 * Expired ones go first — evicting a live entry while a dead one sits in
 	 * the map would throw away a value someone still wants. Only if that is not
-	 * enough does it take the least recently written.
+	 * enough does it take the least recently used: the Map's order, since a
+	 * read moves its key to the end as a write does.
 	 */
 	#enforceCeiling(): void {
-		if (this.#maxItems === 0 || this.#store.size <= this.#maxItems) return;
+		if (this.#fits()) return;
 		const now = Date.now();
 		for (const [key, entry] of this.#store) {
-			if (this.#store.size <= this.#maxItems) return;
+			if (this.#fits()) return;
 			if (entry.staleUntil > 0 && entry.staleUntil < now) {
 				this.#evict(key, entry);
 			}
 		}
 		for (const [key, entry] of this.#store) {
-			if (this.#store.size <= this.#maxItems) return;
+			if (this.#fits()) return;
 			this.#evict(key, entry);
 		}
 	}
@@ -164,6 +219,10 @@ export class MemoryDriver implements TaggableDriver {
 			this.#evict(key, entry);
 			return null;
 		}
+		// Least recently USED, not written: a read moves the key to the end of
+		// the eviction order. Without it the hottest key was the first to go.
+		this.#store.delete(key);
+		this.#store.set(key, entry);
 		const stale = entry.expiresAt > 0 && entry.expiresAt < now;
 		const value =
 			this.#serialize && typeof entry.value === "string"
@@ -186,6 +245,7 @@ export class MemoryDriver implements TaggableDriver {
 	#evict(key: string, entry: StoredEntry): void {
 		for (const tag of entry.tags) this.#tagIndex.get(tag)?.delete(key);
 		this.#store.delete(key);
+		this.#size -= entry.size;
 	}
 
 	#write(
@@ -204,6 +264,13 @@ export class MemoryDriver implements TaggableDriver {
 		// Before anything is touched: a value JSON cannot carry must leave the
 		// previous entry and its tags exactly as they were.
 		const stored = this.#serialize ? toJson(value) : value;
+		const size = typeof stored === "string" ? Buffer.byteLength(stored) : 0;
+		if (this.#maxEntrySize > 0 && size > this.#maxEntrySize) {
+			// Too big to keep. The previous value goes too, as upstream's LRU
+			// does: a skipped write must not leave an older value served.
+			this.#deleteEntry(key);
+			return;
+		}
 		const now = Date.now();
 		const ttl = ttlSeconds === undefined ? 0 : checkTtlSeconds(ttlSeconds);
 		const graceMs = graceSeconds > 0 ? graceSeconds * 1000 : 0;
@@ -232,19 +299,16 @@ export class MemoryDriver implements TaggableDriver {
 		// its old tag-index refs, or a later deleteByTag could purge this fresh
 		// value (audit 2026-05-22 F3).
 		const prev = this.#store.get(key);
-		if (prev !== undefined) {
-			for (const t of prev.tags) this.#tagIndex.get(t)?.delete(key);
-		}
-		// Re-inserting moves the key to the end of the Map's iteration order, so
-		// the first entry is always the least recently WRITTEN — which is the
-		// order this evicts in.
-		this.#store.delete(key);
+		if (prev !== undefined) this.#evict(key, prev);
+		// Inserted last, so it is the most recently used.
 		this.#store.set(key, {
 			value: stored,
 			expiresAt,
 			staleUntil,
 			tags,
+			size,
 		});
+		this.#size += size;
 		this.#enforceCeiling();
 		for (const tag of tags) {
 			let set = this.#tagIndex.get(tag);
@@ -281,28 +345,23 @@ export class MemoryDriver implements TaggableDriver {
 
 	#deleteEntry(key: string): boolean {
 		const entry = this.#store.get(key);
-		if (entry) {
-			for (const tag of entry.tags) {
-				this.#tagIndex.get(tag)?.delete(key);
-			}
-		}
-		return this.#store.delete(key);
+		if (entry === undefined) return false;
+		this.#evict(key, entry);
+		return true;
 	}
 
 	async flush(prefix?: string): Promise<void> {
 		if (prefix === undefined) {
 			this.#store.clear();
 			this.#tagIndex.clear();
+			this.#size = 0;
 			return;
 		}
-		for (const key of [...this.#store.keys()]) {
-			if (key.startsWith(prefix)) this.#store.delete(key);
+		for (const [key, entry] of [...this.#store]) {
+			if (key.startsWith(prefix)) this.#evict(key, entry);
 		}
 		// The tag index points at keys; the ones that are gone go with them.
 		for (const [tag, keys] of [...this.#tagIndex.entries()]) {
-			for (const key of [...keys]) {
-				if (key.startsWith(prefix)) keys.delete(key);
-			}
 			if (keys.size === 0) this.#tagIndex.delete(tag);
 		}
 	}
@@ -333,15 +392,7 @@ export class MemoryDriver implements TaggableDriver {
 				for (const key of keys) toDelete.add(key);
 			}
 		}
-		for (const key of toDelete) {
-			const entry = this.#store.get(key);
-			if (entry) {
-				for (const t of entry.tags) {
-					this.#tagIndex.get(t)?.delete(key);
-				}
-			}
-			this.#store.delete(key);
-		}
+		for (const key of toDelete) this.#deleteEntry(key);
 		for (const tag of tags) this.#tagIndex.delete(tag);
 	}
 

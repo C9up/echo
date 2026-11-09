@@ -123,9 +123,9 @@ describe("echo > the memory driver's ceiling", () => {
 		expect(await driver.get("fresh")).toBe("fresh");
 	});
 
-	it("keeps no ceiling when none was asked for", async () => {
-		const driver = drivers.memory()();
-		for (let i = 0; i < 50; i++) await driver.set(`k${i}`, i);
+	it("keeps no ceiling when explicitly asked for none", async () => {
+		const driver = drivers.memory({ maxItems: 0 })();
+		for (let i = 0; i < 1500; i++) await driver.set(`k${i}`, i);
 		expect(await driver.get("k0")).toBe(0);
 	});
 
