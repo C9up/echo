@@ -10,7 +10,12 @@
  */
 
 import { type Duration, parseDuration, resolveTtlSeconds } from "./duration.js";
-import { FactoryError, LockTimeoutError, TimeoutError } from "./errors.js";
+import {
+	FactoryError,
+	InvalidDurationError,
+	LockTimeoutError,
+	TimeoutError,
+} from "./errors.js";
 import type {
 	CacheEmitter,
 	CacheEntry,
@@ -42,12 +47,29 @@ function isTaggableDriver(driver: CacheDriver): driver is TaggableDriver {
 	);
 }
 
-/** Resolve an optional {@link Duration} to milliseconds; `undefined` when unset. */
+/** The longest delay `setTimeout` honours; past it Node fires after 1 ms. */
+const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Resolve an optional timeout {@link Duration} to milliseconds; `undefined`
+ * when unset or `Infinity` (no timeout).
+ *
+ * Checked, because `setTimeout` reads NaN, Infinity and anything past
+ * 2^31-1 ms as 1 ms: "never time out" became "time out at once", and every
+ * getOrSet rejected. A longer one is clamped to the longest timer there is
+ * (24.8 days); NaN and negatives mean nothing and are refused.
+ */
 function resolveMs(duration: Duration | undefined): number | undefined {
 	if (duration === undefined || duration === null) return undefined;
 	const seconds =
 		typeof duration === "number" ? duration : parseDuration(duration);
-	return Math.max(0, seconds) * 1000;
+	if (seconds === Number.POSITIVE_INFINITY) return undefined;
+	if (Number.isNaN(seconds) || seconds < 0) {
+		throw new InvalidDurationError(
+			`Echo: a timeout must be a non-negative duration, or null for none — got ${String(duration)}`,
+		);
+	}
+	return Math.min(seconds * 1000, MAX_TIMER_MS);
 }
 
 const TIMEOUT: unique symbol = Symbol("echo.timeout");
