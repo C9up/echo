@@ -9,6 +9,7 @@
  * canonical one; the positional form is kept for back-compat.
  */
 
+import { claimed, hasUnref } from "./claim.js";
 import { type Duration, parseDuration, resolveTtlSeconds } from "./duration.js";
 import {
 	EchoError,
@@ -83,15 +84,6 @@ function resolveMs(duration: Duration | undefined): number | undefined {
 }
 
 const TIMEOUT: unique symbol = Symbol("echo.timeout");
-
-/** A timer handle that can be unreferenced — Node's, not the browser's. */
-function hasUnref(timer: unknown): timer is { unref(): void } {
-	return (
-		typeof timer === "object" &&
-		timer !== null &&
-		typeof Reflect.get(timer, "unref") === "function"
-	);
-}
 
 function withTimeout<T>(
 	promise: Promise<T>,
@@ -841,18 +833,23 @@ export class CacheManager {
 		const hasStale = entry?.stale === true && o.graceSeconds > 0;
 		const staleValue = hasStale ? entry.value : undefined;
 
-		let record = this.#shared.inflight.get(prefixed);
+		const record = this.#shared.inflight.get(prefixed);
 		// Joining another caller's factory, rather than running our own.
 		const joined = record !== undefined;
-		if (!record) {
-			record = {
-				promise: this.#invokeFactory<T>(prefixed, o, hasStale, staleValue),
-			};
-			this.#shared.inflight.set(prefixed, record);
+		let factoryPromise: Promise<T>;
+		if (record === undefined) {
+			factoryPromise = this.#invokeFactory<T>(
+				prefixed,
+				o,
+				hasStale,
+				staleValue,
+			);
+			this.#shared.inflight.set(prefixed, { promise: factoryPromise });
+		} else {
+			// The map holds every key's factory, whatever its type; what the
+			// leader computes for this key is what this caller reads.
+			factoryPromise = record.promise.then((value) => claimed<T>(value));
 		}
-		// Single-flight join point: the shared map is heterogeneous (many T), so
-		// this generic re-assertion is unavoidable (mirrors echo <=0.1.5).
-		const factoryPromise = record.promise as Promise<T>;
 
 		if (hasStale && staleValue !== undefined) {
 			// Stale-while-revalidate: serve stale up to the soft timeout (default 0

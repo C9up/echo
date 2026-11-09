@@ -88,6 +88,19 @@ describe("echo > the provider", () => {
 		);
 	});
 
+	// The config was asserted to the right shape, so a prefix that was not a
+	// string reached every key unchecked (bug 333).
+	it("refuses a single-store config of the wrong shape", async () => {
+		for (const config of ["memory", { prefix: 42 }, { ttl: {} }]) {
+			const context = app(config);
+			new EchoProvider(context).register();
+
+			await expect(context.container.resolve(CacheManager)).rejects.toThrow(
+				expect.objectContaining({ code: "E_ECHO_INVALID_CONFIG" }),
+			);
+		}
+	});
+
 	it("refuses a driver the default wiring cannot build", async () => {
 		// Silently falling back to memory would give a production app a cache
 		// that empties on every deploy without saying so.

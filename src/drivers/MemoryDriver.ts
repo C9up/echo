@@ -5,6 +5,7 @@
  */
 
 import { parseBytes } from "../bytes.js";
+import { claimed, hasUnref } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
 import { EchoError, UndefinedValueError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
@@ -132,12 +133,8 @@ export class MemoryDriver implements TaggableDriver {
 			() => this.#sweep(),
 			config.sweepIntervalMs ?? 60_000,
 		);
-		if (
-			typeof this.#sweepInterval === "object" &&
-			"unref" in this.#sweepInterval
-		) {
-			(this.#sweepInterval as { unref(): void }).unref();
-		}
+		// The sweep is housekeeping, not a reason for the process to stay up.
+		if (hasUnref(this.#sweepInterval)) this.#sweepInterval.unref();
 	}
 
 	#fits(): boolean {
@@ -230,7 +227,7 @@ export class MemoryDriver implements TaggableDriver {
 				? JSON.parse(entry.value)
 				: entry.value;
 		return {
-			value: value as T,
+			value: claimed<T>(value),
 			stale,
 			expiresAt: entry.expiresAt,
 			tags: [...entry.tags],

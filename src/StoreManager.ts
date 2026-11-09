@@ -135,12 +135,6 @@ export class Store {
 	entry(): StoreConfig {
 		const l1 = this.#l1;
 		const l2 = this.#l2;
-		if (!l1 && !l2) {
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
-				"Echo: a store needs a layer — call useL1Layer() or useL2Layer() on it.",
-			);
-		}
 		if (l1 && l2) {
 			return {
 				...this.#options,
@@ -153,7 +147,13 @@ export class Store {
 				}),
 			};
 		}
-		const only = (l1 ?? l2) as DriverFactory;
+		const only = l1 ?? l2;
+		if (only === undefined) {
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
+				"Echo: a store needs a layer — call useL1Layer() or useL2Layer() on it.",
+			);
+		}
 		if (this.#bus) {
 			throw new EchoError(
 				"E_ECHO_INVALID_CONFIG",

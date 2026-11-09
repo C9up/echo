@@ -44,6 +44,34 @@ function isEmitter(value: unknown): value is CacheEmitter {
 	);
 }
 
+function isDuration(value: unknown): boolean {
+	return (
+		value === undefined ||
+		value === null ||
+		typeof value === "number" ||
+		typeof value === "string"
+	);
+}
+
+/** A single-store config, field by field. */
+function isSingleStoreConfig(value: unknown): value is EchoProviderConfig {
+	if (typeof value !== "object" || value === null) return false;
+	const read = (name: string): unknown => Reflect.get(value, name);
+	const driver = read("driver");
+	const prefix = read("prefix");
+	const name = read("name");
+	const emitter = read("emitter");
+	return (
+		(driver === undefined || driver === "memory") &&
+		(prefix === undefined || typeof prefix === "string") &&
+		(name === undefined || typeof name === "string") &&
+		(emitter === undefined || isEmitter(emitter)) &&
+		["ttl", "grace", "timeout", "hardTimeout", "lockTimeout"].every((field) =>
+			isDuration(read(field)),
+		)
+	);
+}
+
 function isMultiStoreConfig(value: unknown): value is MultiStoreConfig {
 	return (
 		typeof value === "object" &&
@@ -95,14 +123,25 @@ export default class EchoProvider {
 				return manager.use();
 			}
 
-			const config = (raw ?? {}) as EchoProviderConfig;
-			const driver = config.driver ?? "memory";
+			const config: unknown = raw ?? {};
+			const driver =
+				typeof config === "object" && config !== null
+					? (Reflect.get(config, "driver") ?? "memory")
+					: "memory";
 			if (driver !== "memory") {
 				throw new EchoError(
 					"E_ECHO_UNSUPPORTED_DRIVER",
-					`[echo] Unsupported driver '${driver}' for default provider — ` +
+					`[echo] Unsupported driver '${String(driver)}' for default provider — ` +
 						"wire CacheManager yourself for non-memory drivers, or use the " +
 						"multi-store `{ default, stores }` config.",
+				);
+			}
+			// Checked, not asserted: a config file is the application's, and
+			// a prefix that is not a string would otherwise reach every key.
+			if (!isSingleStoreConfig(config)) {
+				throw new EchoError(
+					"E_ECHO_INVALID_CONFIG",
+					"[echo] config/cache.ts must export an object — `{ prefix, ttl, … }` for one store, or `{ default, stores }` for several.",
 				);
 			}
 			return new CacheManager(new MemoryDriver(), { ...config, emitter });

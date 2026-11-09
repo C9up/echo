@@ -13,6 +13,7 @@
  * window; `e` records the logical expiry so reads can flag it stale.
  */
 
+import { claimed } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
 import { EchoError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
@@ -192,10 +193,7 @@ export class RedisDriver implements TaggableDriver {
 			return null;
 		}
 		const stale = parsed.e > 0 && parsed.e < Date.now();
-		// Deserialize boundary: the on-the-wire value is genuinely `unknown`; the
-		// caller's generic `T` is the assertion. This is the single unavoidable
-		// cast site (mirrors echo <=0.1.5 `JSON.parse(raw) as T`).
-		const value = parsed.v as T;
+		const value = claimed<T>(parsed.v);
 		const tags = Reflect.get(parsed, "t");
 		return {
 			value,

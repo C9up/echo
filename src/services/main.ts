@@ -11,7 +11,7 @@
  *   const cached = await cache.get<User>('user:42')
  */
 
-import type { CacheManager } from "../CacheManager.js";
+import { CacheManager } from "../CacheManager.js";
 import { EchoError } from "../errors.js";
 
 let instance: CacheManager | undefined;
@@ -34,7 +34,29 @@ export function clearCache(): void {
 	instance = undefined;
 }
 
-const cache: CacheManager = new Proxy({} as CacheManager, {
+/**
+ * What the proxy stands on. Never reached: every read goes through the trap
+ * below, to the bound manager or to the not-booted error. A real instance
+ * rather than an asserted `{}`, so the proxy is a `CacheManager` by type.
+ */
+const unbooted = (): Promise<never> => Promise.reject(notBooted());
+const placeholder = new CacheManager({
+	get: unbooted,
+	set: unbooted,
+	delete: unbooted,
+	flush: unbooted,
+	has: unbooted,
+});
+
+function notBooted(): EchoError {
+	return new EchoError(
+		"E_ECHO_NOT_BOOTED",
+		"[echo] CacheManager singleton accessed before EchoProvider.boot() ran " +
+			"or `setCache(myCache)` was called. Wire one of them first.",
+	);
+}
+
+const cache: CacheManager = new Proxy(placeholder, {
 	get(_target, prop) {
 		// A module loader inspects what it imports before anyone uses it: it reads
 		// `then` to decide whether the namespace is thenable, and various symbols
@@ -45,13 +67,7 @@ const cache: CacheManager = new Proxy({} as CacheManager, {
 		if (typeof prop === "symbol" || prop === "then") {
 			return undefined;
 		}
-		if (!instance) {
-			throw new EchoError(
-				"E_ECHO_NOT_BOOTED",
-				"[echo] CacheManager singleton accessed before EchoProvider.boot() ran " +
-					"or `setCache(myCache)` was called. Wire one of them first.",
-			);
-		}
+		if (!instance) throw notBooted();
 		const value = Reflect.get(instance, prop, instance);
 		return typeof value === "function" ? value.bind(instance) : value;
 	},
