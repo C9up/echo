@@ -86,4 +86,46 @@ describeRedis("echo on a raw ioredis client", () => {
 			expect(await root.namespace("b").get({ key: "k" })).toBe("b");
 		});
 	});
+
+	describe("namespace clear() with glob characters (bug 303)", () => {
+		// SCAN MATCH is a glob: an unescaped `tenant-*` matched every tenant.
+		const cases: Array<{ cleared: string; siblings: string[] }> = [
+			{ cleared: "tenant-*", siblings: ["tenant-abc", "tenant-xyz"] },
+			{ cleared: "a?c", siblings: ["abc", "axc"] },
+			{ cleared: "[ab]", siblings: ["a", "b"] },
+			{ cleared: "a\\", siblings: ["a", "a\\b"] },
+			{ cleared: "x[", siblings: ["x", "x[y"] },
+		];
+
+		for (const { cleared, siblings } of cases) {
+			it(`clearing "${cleared}" leaves ${siblings.join(", ")} intact`, async () => {
+				const root = new CacheManager(new RedisDriver(client, base));
+				for (const ns of siblings) {
+					await root.namespace(ns).set({ key: "doc", value: ns });
+				}
+				await root.namespace(cleared).set({ key: "doc", value: "mine" });
+
+				await root.namespace(cleared).clear();
+
+				expect(await root.namespace(cleared).get({ key: "doc" })).toBe(
+					undefined,
+				);
+				for (const ns of siblings) {
+					expect(await root.namespace(ns).get({ key: "doc" })).toBe(ns);
+				}
+			});
+		}
+
+		it("escapes a driver prefix carrying glob characters", async () => {
+			const mine = new CacheManager(new RedisDriver(client, `${base}app*:`));
+			const other = new CacheManager(new RedisDriver(client, `${base}app1:`));
+			await mine.set({ key: "k", value: "mine" });
+			await other.set({ key: "k", value: "other" });
+
+			await mine.clear();
+
+			expect(await mine.get({ key: "k" })).toBeUndefined();
+			expect(await other.get({ key: "k" })).toBe("other");
+		});
+	});
 });

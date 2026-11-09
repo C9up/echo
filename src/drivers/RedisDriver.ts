@@ -44,6 +44,11 @@ interface Envelope {
 	e: number;
 }
 
+/** Escape Redis MATCH glob metacharacters so the pattern matches literally. */
+function escapeGlob(literal: string): string {
+	return literal.replace(/[*?[\]\\]/g, "\\$&");
+}
+
 function isEnvelope(x: unknown): x is Envelope {
 	return (
 		typeof x === "object" &&
@@ -228,32 +233,44 @@ export class RedisDriver implements TaggableDriver {
 	}
 
 	async flush(prefix?: string): Promise<void> {
+		// The driver's own prefix scopes it to this store; `prefix` scopes it
+		// further, to the namespace that asked.
+		await this.#deleteUnder(`${this.#prefix}${prefix ?? ""}`);
+	}
+
+	/**
+	 * Delete every key that starts with `literal`, walking a SCAN cursor.
+	 *
+	 * The prefix is escaped before it becomes a MATCH pattern: MATCH is a glob,
+	 * so a namespace like `tenant-*` matched every tenant and a clear of it
+	 * wiped them all. Each returned key is checked against the literal prefix
+	 * as well, so a pattern the server reads differently still deletes nothing
+	 * outside it. Upstream interpolates the prefix unescaped; this is stricter
+	 * on purpose.
+	 */
+	async #deleteUnder(literal: string): Promise<void> {
 		const client = await this.#client();
-		if (typeof client.scan === "function") {
-			// The driver's own prefix scopes it to this store; `prefix` scopes
-			// it further, to the namespace that asked.
-			const match = `${this.#prefix}${prefix ?? ""}`;
-			let cursor = "0";
-			do {
-				// Called ON the client: ioredis reads `this` inside scan(), so a
-				// detached reference threw and left every key in place.
-				const [nextCursor, keys] = await client.scan(
-					cursor,
-					"MATCH",
-					`${match}*`,
-					"COUNT",
-					100,
-				);
-				cursor = nextCursor;
-				if (keys.length > 0) {
-					await client.del(...keys);
-				}
-			} while (cursor !== "0");
-		} else {
+		if (typeof client.scan !== "function") {
 			throw new Error(
 				"Echo: RedisDriver.flush() requires a client with scan() support. KEYS is not safe for production use.",
 			);
 		}
+		const pattern = `${escapeGlob(literal)}*`;
+		let cursor = "0";
+		do {
+			// Called ON the client: ioredis reads `this` inside scan(), so a
+			// detached reference threw and left every key in place.
+			const [nextCursor, keys] = await client.scan(
+				cursor,
+				"MATCH",
+				pattern,
+				"COUNT",
+				100,
+			);
+			cursor = nextCursor;
+			const owned = keys.filter((key) => key.startsWith(literal));
+			if (owned.length > 0) await client.del(...owned);
+		} while (cursor !== "0");
 	}
 
 	async has(key: string): Promise<boolean> {
