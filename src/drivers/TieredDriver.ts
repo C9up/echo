@@ -8,6 +8,8 @@
  * shared, so only L1 needs cross-instance invalidation.
  */
 
+import { type Duration, resolveTtlSeconds } from "../duration.js";
+import { L2CacheError } from "../errors.js";
 import type {
 	CacheDriver,
 	CacheEntry,
@@ -81,6 +83,24 @@ export interface TieredDriverOptions {
 	l1: CacheDriver;
 	l2: CacheDriver;
 	bus?: CacheBus;
+	/**
+	 * Treat a failed L2 read as a miss and a failed L2 write as skipped,
+	 * rather than failing the call (upstream `suppressL2Errors`). Default
+	 * `true`: there is an L1 to serve from, so a Redis outage costs hit rate,
+	 * not every request. `false` surfaces each failure as an
+	 * {@link L2CacheError}.
+	 *
+	 * Invalidations — `delete`, `flush`, `deleteByTag` — report a failed L2
+	 * either way: a removal that did not reach the shared tier leaves the
+	 * value served to every other instance, and the caller has to know.
+	 */
+	suppressL2Errors?: boolean;
+	/**
+	 * After an L2 failure, skip the L2 for this long instead of waiting on a
+	 * dead server for every call (upstream `l2CircuitBreakerDuration`).
+	 * Off by default.
+	 */
+	l2CircuitBreakerDuration?: Duration;
 }
 
 function isTaggable(driver: CacheDriver): driver is TaggableDriver {
@@ -148,10 +168,22 @@ export class TieredDriver implements TaggableDriver {
 	/** This tier, as a bus sender. */
 	readonly #id = crypto.randomUUID();
 
+	readonly #suppressL2Errors: boolean;
+	/** How long the breaker stays open after an L2 failure; `0` for no breaker. */
+	readonly #breakerMs: number;
+	/** Until when (epoch ms) the L2 is skipped. */
+	#breakerUntil = 0;
+	/** Whether the last L2 call failed — so an outage is reported once, not per call. */
+	#l2Failing = false;
+
 	constructor(options: TieredDriverOptions) {
 		this.#l1 = options.l1;
 		this.#l2 = options.l2;
 		this.#bus = options.bus;
+		this.#suppressL2Errors = options.suppressL2Errors ?? true;
+		this.#breakerMs =
+			Math.max(0, resolveTtlSeconds(options.l2CircuitBreakerDuration, 0)) *
+			1000;
 		this.#onPeerMessage = (message: BusMessage): void => {
 			// Our own invalidation, come back round the bus. Acting on it would
 			// undo the write that sent it.
@@ -226,11 +258,70 @@ export class TieredDriver implements TaggableDriver {
 		});
 	}
 
+	/**
+	 * Run a read or write against L2, the way upstream's remote cache does:
+	 * skipped while the breaker is open, and on failure either answered by
+	 * `fallback` (suppressed) or raised as an {@link L2CacheError}.
+	 */
+	async #onL2<T>(
+		operation: string,
+		run: () => Promise<T>,
+		fallback: T,
+	): Promise<{ ok: true; value: T } | { ok: false; value: T }> {
+		if (Date.now() < this.#breakerUntil) return { ok: false, value: fallback };
+		try {
+			const value = await run();
+			this.#l2Failing = false;
+			return { ok: true, value };
+		} catch (error) {
+			this.#l2Failed(operation, error);
+			if (this.#suppressL2Errors) return { ok: false, value: fallback };
+			throw new L2CacheError(operation, error);
+		}
+	}
+
+	/** Open the breaker, and report the outage when it starts. */
+	#l2Failed(operation: string, error: unknown): void {
+		if (this.#breakerMs > 0) this.#breakerUntil = Date.now() + this.#breakerMs;
+		if (this.#l2Failing) return;
+		this.#l2Failing = true;
+		process.stderr.write(
+			`[echo] tiered L2 ${operation} failed; serving from L1 until it answers again: ${
+				error instanceof Error ? error.message : String(error)
+			}\n`,
+		);
+	}
+
+	/**
+	 * Run an invalidation against L2. Never suppressed and never skipped by
+	 * the breaker: a removal that did not reach the shared tier leaves the
+	 * value there for every other instance. NAMED DEVIATION — upstream
+	 * suppresses these too; reporting them is the safer side.
+	 */
+	async #invalidateL2<T>(
+		operation: string,
+		run: () => Promise<T>,
+	): Promise<{ ok: true; value: T } | { ok: false; error: unknown }> {
+		try {
+			const value = await run();
+			this.#l2Failing = false;
+			return { ok: true, value };
+		} catch (error) {
+			this.#l2Failed(operation, error);
+			return { ok: false, error: new L2CacheError(operation, error) };
+		}
+	}
+
 	async getEntry<T = unknown>(key: string): Promise<CacheEntry<T> | null> {
 		const l1 = await readEntry<T>(this.#l1, key);
 		if (l1 && !l1.stale) return l1;
 
-		const l2 = await readEntry<T>(this.#l2, key);
+		// A failed L2 read is a miss: the stale L1 copy, if any, still serves.
+		const { value: l2 } = await this.#onL2(
+			"read",
+			() => readEntry<T>(this.#l2, key),
+			null,
+		);
 		if (l2 && !l2.stale) {
 			// Promote a fresh L2 hit into L1 — preserving the remaining logical TTL
 			// so L1 cannot outlive L2 (a promotion with no TTL left an immortal L1
@@ -276,12 +367,21 @@ export class TieredDriver implements TaggableDriver {
 		options: DriverSetOptions,
 	): Promise<void> {
 		const l1 = await settle(() => writeEntry(this.#l1, key, value, options));
-		const l2 = await settle(() => writeEntry(this.#l2, key, value, options));
+		const l2 = await settle(() =>
+			this.#onL2(
+				"write",
+				async () => {
+					await writeEntry(this.#l2, key, value, options);
+					return true;
+				},
+				false,
+			),
+		);
 		// Peers are told only when the shared write landed. Telling them to drop
 		// their L1 for a value that never reached L2 sends every one of them to a
 		// tier that does not have it. Upstream gates the same publish on the same
 		// thing (`if (this.l2 && l2Success || !this.l2)`).
-		if (l2.ok) {
+		if (l2.ok && l2.value.ok) {
 			await this.#bus?.publish({
 				type: "delete",
 				keys: [key],
@@ -294,7 +394,7 @@ export class TieredDriver implements TaggableDriver {
 
 	async delete(key: string): Promise<boolean> {
 		const l1 = await settle(() => this.#l1.delete(key));
-		const l2 = await settle(() => this.#l2.delete(key));
+		const l2 = await this.#invalidateL2("delete", () => this.#l2.delete(key));
 		if (l2.ok) {
 			await this.#bus?.publish({
 				type: "delete",
@@ -309,7 +409,7 @@ export class TieredDriver implements TaggableDriver {
 
 	async flush(prefix?: string): Promise<void> {
 		const l1 = await settle(() => this.#l1.flush(prefix));
-		const l2 = await settle(() => this.#l2.flush(prefix));
+		const l2 = await this.#invalidateL2("flush", () => this.#l2.flush(prefix));
 		if (l2.ok) {
 			// The prefix travels: a peer that flushed its WHOLE L1 on a
 			// namespaced clear would throw away every other tenant's entries
@@ -347,7 +447,9 @@ export class TieredDriver implements TaggableDriver {
 			);
 		}
 		const local = await settle(() => l1.deleteByTag(tags));
-		const shared = await settle(() => l2.deleteByTag(tags));
+		const shared = await this.#invalidateL2("deleteByTag", () =>
+			l2.deleteByTag(tags),
+		);
 		// Peers can't map tags → keys locally; broadcast a clear so their L1 drops
 		// any tagged copies (conservative but correct).
 		if (shared.ok) {

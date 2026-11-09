@@ -46,6 +46,21 @@ export class LockTimeoutError extends EchoError {
 	}
 }
 
+/**
+ * Raised when a tiered store's L2 fails and the failure is not suppressed
+ * (upstream `E_L2_CACHE_ERROR`, kept verbatim). `cause` is the L2's error.
+ */
+export class L2CacheError extends EchoError {
+	constructor(operation: string, cause: unknown) {
+		const reason = cause instanceof Error ? cause.message : String(cause);
+		super(
+			"E_L2_CACHE_ERROR",
+			`Echo: the L2 cache failed during ${operation}: ${reason}`,
+			{ cause },
+		);
+	}
+}
+
 /** Raised when a factory exceeds its configured `hardTimeout`. */
 export class TimeoutError extends Error {
 	constructor(key: string, timeoutMs: number) {

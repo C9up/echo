@@ -21,7 +21,11 @@ import {
 	type MemoryDriverOptions,
 } from "./drivers/MemoryDriver.js";
 import { type RedisClient, RedisDriver } from "./drivers/RedisDriver.js";
-import { type CacheBus, TieredDriver } from "./drivers/TieredDriver.js";
+import {
+	type CacheBus,
+	TieredDriver,
+	type TieredDriverOptions,
+} from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
 import { quasarBus, quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter, CacheEventMap } from "./types.js";
@@ -45,6 +49,14 @@ export interface StoreConfig {
 	timeout?: Duration;
 	hardTimeout?: Duration;
 	lockTimeout?: Duration;
+	/**
+	 * For a two-layer store: serve from L1 and the factory when the L2 fails,
+	 * rather than failing the call. Default `true` (see
+	 * {@link TieredDriverOptions.suppressL2Errors}).
+	 */
+	suppressL2Errors?: boolean;
+	/** For a two-layer store: how long to skip a failing L2. Off by default. */
+	l2CircuitBreakerDuration?: Duration;
 }
 
 export interface MultiStoreConfig {
@@ -120,7 +132,13 @@ export class Store {
 		if (l1 && l2) {
 			return {
 				...this.#options,
-				driver: drivers.tiered({ l1, l2, bus: this.#bus }),
+				driver: drivers.tiered({
+					l1,
+					l2,
+					bus: this.#bus,
+					suppressL2Errors: this.#options.suppressL2Errors,
+					l2CircuitBreakerDuration: this.#options.l2CircuitBreakerDuration,
+				}),
 			};
 		}
 		const only = (l1 ?? l2) as DriverFactory;
@@ -184,16 +202,17 @@ export const drivers = {
 	redisBus(options?: { connection?: string; channel?: string }): CacheBus {
 		return quasarBus(options);
 	},
-	tiered(options: {
-		l1: DriverFactory;
-		l2: DriverFactory;
-		bus?: CacheBus;
-	}): DriverFactory {
+	tiered(
+		options: {
+			l1: DriverFactory;
+			l2: DriverFactory;
+		} & Omit<TieredDriverOptions, "l1" | "l2">,
+	): DriverFactory {
 		return () =>
 			new TieredDriver({
+				...options,
 				l1: options.l1(),
 				l2: options.l2(),
-				bus: options.bus,
 			});
 	},
 };

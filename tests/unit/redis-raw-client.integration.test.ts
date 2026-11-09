@@ -245,6 +245,41 @@ describeRedis("echo on a raw ioredis client", () => {
 		});
 	});
 
+	describe("tiered store over an unreachable Redis L2 (bug 325)", () => {
+		it("keeps serving from L1 and the factory", async () => {
+			const down = new QuasarManager({
+				connection: "down" as const,
+				connections: {
+					down: {
+						host: "127.0.0.1",
+						port: 1,
+						lazyConnect: true,
+						enableOfflineQueue: false,
+						maxRetriesPerRequest: 0,
+						retryStrategy: () => null,
+					},
+				},
+			});
+			const l1 = new MemoryDriver();
+			try {
+				const l2Client: RedisClient = down.connection().ioConnection;
+				const cache = new CacheManager(
+					new TieredDriver({ l1, l2: new RedisDriver(l2Client, base) }),
+				);
+
+				await cache.set({ key: "k", value: 1 });
+				expect(await cache.get({ key: "k" })).toBe(1);
+				expect(await cache.get({ key: "miss" })).toBeUndefined();
+				expect(
+					await cache.getOrSet({ key: "g", factory: () => "computed" }),
+				).toBe("computed");
+			} finally {
+				l1.destroy();
+				await down.disconnect("down");
+			}
+		});
+	});
+
 	describe("namespace clear() with glob characters (bug 303)", () => {
 		// SCAN MATCH is a glob: an unescaped `tenant-*` matched every tenant.
 		const cases: Array<{ cleared: string; siblings: string[] }> = [

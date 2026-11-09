@@ -32,6 +32,7 @@ export {
 	EchoError,
 	FactoryError,
 	InvalidDurationError,
+	L2CacheError,
 	LockTimeoutError,
 	TimeoutError,
 } from "./errors.js";

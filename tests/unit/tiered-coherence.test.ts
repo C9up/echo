@@ -157,7 +157,9 @@ describe("echo > a tier that refuses", () => {
 		const tiered = new TieredDriver({ l1, l2: failing, bus });
 		await tiered.connect();
 
-		await expect(tiered.set("k", "v", 60)).rejects.toThrow(/L2 write refused/);
+		// Suppressed by default (an L1 is there to serve from), and still not
+		// published.
+		await tiered.set("k", "v", 60);
 
 		// Telling peers to drop their L1 for a value that never reached the
 		// shared tier sends every one of them to a tier that does not have it.
