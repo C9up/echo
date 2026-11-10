@@ -255,12 +255,22 @@ export class CacheStoreManager {
 
 	constructor(config: MultiStoreConfig) {
 		this.#config = config;
-		if (!config.stores[config.default]) {
+		if (!this.#declared(config.default)) {
 			throw new EchoError(
 				"E_ECHO_UNKNOWN_STORE",
 				`Echo: default store "${config.default}" is not defined in stores`,
 			);
 		}
+	}
+
+	/**
+	 * A store declared under `name` in the config's OWN keys: a plain lookup
+	 * would answer `toString` or `constructor` with an Object.prototype member.
+	 */
+	#declared(name: string): MultiStoreConfig["stores"][string] | undefined {
+		return Object.hasOwn(this.#config.stores, name)
+			? this.#config.stores[name]
+			: undefined;
 	}
 
 	/** The store `use()` answers with no name (upstream `defaultStoreName`). */
@@ -274,7 +284,7 @@ export class CacheStoreManager {
 		const existing = this.#built.get(store);
 		if (existing) return existing;
 
-		const declared = this.#config.stores[store];
+		const declared = this.#declared(store);
 		if (!declared) {
 			throw new EchoError(
 				"E_ECHO_UNKNOWN_STORE",

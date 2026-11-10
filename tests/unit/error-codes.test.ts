@@ -125,6 +125,29 @@ describe("echo > echo's own error codes", () => {
 		);
 	});
 
+	it("a store name only resolves to an own declared store, never to Object.prototype (bug 526)", () => {
+		const manager = new CacheStoreManager({
+			default: "a",
+			stores: { a: { driver: drivers.memory() } },
+		});
+		for (const name of [
+			"toString",
+			"constructor",
+			"__proto__",
+			"hasOwnProperty",
+			"valueOf",
+		]) {
+			expect(() => manager.use(name)).toThrow(code("E_ECHO_UNKNOWN_STORE"));
+			expect(
+				() =>
+					new CacheStoreManager({
+						default: name,
+						stores: { a: { driver: drivers.memory() } },
+					}),
+			).toThrow(code("E_ECHO_UNKNOWN_STORE"));
+		}
+	});
+
 	it("tags on a driver without them is E_ECHO_NOT_TAGGABLE", async () => {
 		const cache = new CacheManager(plain());
 		await expect(cache.deleteByTag(["t"])).rejects.toThrow(
