@@ -18,7 +18,10 @@ import {
 	isBusMessage,
 } from "./drivers/TieredDriver.js";
 import { EchoError } from "./errors.js";
-import { quasarConnection as loadQuasarConnection } from "./vendor/quasarConnection.js";
+import {
+	hasCommands,
+	quasarConnection as loadQuasarConnection,
+} from "./vendor/quasarConnection.js";
 
 /**
  * The commands this driver actually issues.
@@ -42,15 +45,30 @@ const REQUIRED = [
 ] as const;
 
 /**
+ * The connection is handed over only once it carries every command above.
+ * `keys` and `exists` are declared but never called, so not required either;
+ * `scan` stays optional, but when there it has to be a function too.
+ */
+function isRedisClient(value: unknown): value is RedisClient {
+	return (
+		hasCommands(value, REQUIRED) &&
+		(!("scan" in value) ||
+			value.scan === undefined ||
+			typeof value.scan === "function")
+	);
+}
+
+/**
  * A resolver for `drivers.redis({ connection })` — quasar is loaded on the
  * first cache command, not at config time.
  */
 export function quasarConnection(name?: string): () => Promise<RedisClient> {
 	return async () =>
-		loadQuasarConnection<RedisClient>({
+		loadQuasarConnection({
 			pkg: "echo",
 			name,
 			required: REQUIRED,
+			isConnection: isRedisClient,
 			what: "the cache store",
 			raise: (reason, message, cause) =>
 				new EchoError(

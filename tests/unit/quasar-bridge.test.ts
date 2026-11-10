@@ -120,6 +120,51 @@ describe("echo > the quasar bridge", () => {
 		}
 	});
 
+	it("refuses a connection whose optional scan is not a command", async () => {
+		// Every required command is there, so only echo's own guard can catch
+		// it — before, the connection was handed over on the strength of a cast.
+		mockQuasar({
+			default: { connection: () => ({ ...client(), scan: "nope" }) },
+		});
+
+		await expect((await load())("main")()).rejects.toThrow(
+			/connection 'main' is not the client the cache store needs/,
+		);
+		await expect((await load())("main")()).rejects.toThrow(
+			expect.objectContaining({ code: "E_ECHO_INCOMPLETE_CONNECTION" }),
+		);
+	});
+
+	it("says quasar's provider has not booted, rather than blaming the module", async () => {
+		// Quasar's accessor throws on any read until its provider has seated a
+		// manager. Swallowing that throw used to report "did not expose a
+		// connection() manager" — sending the reader after the wrong problem.
+		const notBooted = new Error(
+			"[redis] accessed before initialization — register QuasarProvider, or call setQuasar() yourself.",
+		);
+		const accessor = new Proxy(Object.create(null), {
+			get(_target, property) {
+				if (typeof property === "symbol" || property === "then") {
+					return undefined;
+				}
+				throw notBooted;
+			},
+		});
+		mockQuasar({ default: accessor });
+
+		const error = await (await load())("main")().catch(
+			(caught: unknown) => caught,
+		);
+		expect(error).toBeInstanceOf(Error);
+		if (!(error instanceof Error)) return;
+		expect(error.message).toMatch(
+			/provider has not booted, or is not registered/,
+		);
+		expect(error.message).not.toMatch(/did not expose/);
+		expect(error.cause).toBe(notBooted);
+		expect(error).toMatchObject({ code: "E_ECHO_QUASAR_MISSING" });
+	});
+
 	it("accepts a connection that omits keys and exists", async () => {
 		// `flush()` walks a SCAN cursor rather than calling KEYS, so demanding
 		// KEYS would reject a client on grounds this driver agrees with.
