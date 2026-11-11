@@ -180,18 +180,27 @@ export function quasarBus(options?: {
 	const manager = (): Promise<PubSubSource> => {
 		ready ??= loadQuasar(
 			`the cache bus asks for the "${options?.connection ?? "default"}" quasar connection`,
-		).then((loaded) => {
-			const source = isConnectionSource(loaded)
-				? loaded.connection(options?.connection)
-				: loaded;
-			if (!isPubSubSource(source)) {
-				throw new EchoError(
-					"E_ECHO_INCOMPLETE_CONNECTION",
-					"Echo: the quasar connection does not expose publish()/subscribe()",
-				);
-			}
-			return source;
-		});
+		)
+			.then((loaded) => {
+				const source = isConnectionSource(loaded)
+					? loaded.connection(options?.connection)
+					: loaded;
+				if (!isPubSubSource(source)) {
+					throw new EchoError(
+						"E_ECHO_INCOMPLETE_CONNECTION",
+						"Echo: the quasar connection does not expose publish()/subscribe()",
+					);
+				}
+				return source;
+			})
+			// Forgotten on failure, as the Redis driver forgets its client:
+			// kept, one rejection (quasar's provider not booted yet when an
+			// earlier provider wrote to a tiered store) was replayed by every
+			// later publish and subscribe for the life of the process.
+			.catch((error: unknown) => {
+				ready = undefined;
+				throw error;
+			});
 		return ready;
 	};
 

@@ -98,6 +98,34 @@ describe("echo > the quasar cache bus", () => {
 		]);
 	});
 
+	// The first failure was memoised and replayed by every later publish and
+	// subscribe, for the life of the process: a store written to during boot,
+	// before quasar's provider was ready, never had a bus again.
+	it("retries reaching the connection after a failed attempt", async () => {
+		const socket = pubsub();
+		let attempts = 0;
+		const manager = {
+			connection: vi.fn(() => {
+				attempts += 1;
+				if (attempts === 1) throw new Error("quasar is not booted yet");
+				return socket;
+			}),
+		};
+		mockQuasar({ default: manager });
+		const bus = (await load())({ connection: "cache" });
+
+		await expect(bus.publish(message)).rejects.toThrow("not booted");
+		await bus.publish(message);
+		await bus.subscribe(() => {});
+
+		expect(socket.published).toEqual([
+			["echo::invalidate", JSON.stringify(message)],
+		]);
+		expect(socket.handlers.has("echo::invalidate")).toBe(true);
+		// Resolved once it worked: the next calls reuse it.
+		expect(attempts).toBe(2);
+	});
+
 	it("honours a channel the application named", async () => {
 		const socket = pubsub();
 		mockQuasar({ default: { connection: () => socket } });
