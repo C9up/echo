@@ -195,6 +195,7 @@ describe("echo > echo's own error codes", () => {
 			srem: async () => 0,
 			smembers: async () => [],
 			expire: async () => 1,
+			persist: async () => 0,
 			ttl: async () => -1,
 		};
 		await expect(new RedisDriver(client).flush()).rejects.toThrow(

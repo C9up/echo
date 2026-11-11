@@ -46,6 +46,8 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 	store: Map<string, string>;
 	sets: Map<string, Set<string>>;
 	calls: Array<{ op: string; args: unknown[] }>;
+	/** Evict every key whose expiry (in seconds) is at most `seconds`, as Redis would once that much time has passed. */
+	lapse(seconds: number): void;
 } {
 	const store = new Map<string, string>();
 	const sets = new Map<string, Set<string>>();
@@ -63,6 +65,9 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 		async set(key, value, ...args) {
 			calls.push({ op: "set", args: [key, value, ...args] });
 			store.set(key, value);
+			// SET drops any previous expiry; `PX` sets a new one.
+			if (args[0] === "PX") ttls.set(key, Number(args[1]) / 1000);
+			else ttls.delete(key);
 			return "OK";
 		},
 		async del(...keys) {
@@ -71,6 +76,7 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 			for (const k of keys) {
 				if (store.delete(k)) count++;
 				if (sets.delete(k)) count++;
+				ttls.delete(k);
 			}
 			return count;
 		},
@@ -98,7 +104,10 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 			for (const m of members) {
 				if (set.delete(m)) removed++;
 			}
-			if (set.size === 0) sets.delete(key);
+			if (set.size === 0) {
+				sets.delete(key);
+				ttls.delete(key);
+			}
 			return removed;
 		},
 		async smembers(key) {
@@ -107,13 +116,29 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 		},
 		async expire(key, seconds) {
 			calls.push({ op: "expire", args: [key, seconds] });
+			if (!store.has(key) && !sets.has(key)) return 0;
 			ttls.set(key, seconds);
 			return 1;
 		},
+		async persist(key) {
+			calls.push({ op: "persist", args: [key] });
+			return ttls.delete(key) ? 1 : 0;
+		},
+		// As Redis answers: -2 for no such key, -1 for a key with no expiry.
 		async ttl(key) {
 			calls.push({ op: "ttl", args: [key] });
+			if (!store.has(key) && !sets.has(key)) return -2;
 			return ttls.get(key) ?? -1;
 		},
+	};
+
+	const lapse = (seconds: number): void => {
+		for (const [key, ttl] of [...ttls]) {
+			if (ttl > seconds) continue;
+			store.delete(key);
+			sets.delete(key);
+			ttls.delete(key);
+		}
 	};
 
 	if (opts.withScan) {
@@ -149,7 +174,7 @@ function createFakeRedis(opts: FakeRedisOpts = {}): {
 		};
 	}
 
-	return { client, store, sets, calls };
+	return { client, store, sets, calls, lapse };
 }
 
 describe("echo > RedisDriver > get/set/has/delete", () => {
@@ -253,6 +278,7 @@ describe("echo > RedisDriver > flush", () => {
 			smembers = (key: string) => this.#inner.smembers(key);
 			expire = (key: string, seconds: number) =>
 				this.#inner.expire(key, seconds);
+			persist = (key: string) => this.#inner.persist(key);
 			ttl = (key: string) => this.#inner.ttl(key);
 			scan(
 				cursor: string,
@@ -375,6 +401,38 @@ describe("echo > RedisDriver > tagging", () => {
 		expect(fake.sets.get("cache:t:homepage")?.has("article:42") ?? false).toBe(
 			false,
 		);
+	});
+
+	// A tag set took the TTL of whichever member was written last with one, and
+	// an immortal member never made it persistent again: once the set lapsed,
+	// deleteByTag found nobody and the immortal entry kept being served.
+	it("keeps a tag set alive as long as an immortal member, whichever is written first", async () => {
+		for (const order of ["immortal-first", "short-first"] as const) {
+			const fake = createFakeRedis();
+			const driver = new RedisDriver(fake.client);
+			if (order === "immortal-first") {
+				await driver.setEntry("forever", "v", { tags: ["perm"] });
+				await driver.setEntry("short", "v", { ttlSeconds: 10, tags: ["perm"] });
+			} else {
+				await driver.setEntry("short", "v", { ttlSeconds: 10, tags: ["perm"] });
+				await driver.setEntry("forever", "v", { tags: ["perm"] });
+			}
+			expect(await fake.client.ttl("cache:t:perm")).toBe(-1);
+			fake.lapse(10);
+			await driver.deleteByTag(["perm"]);
+			expect(await driver.get("forever")).toBe(null);
+		}
+	});
+
+	it("still extends a finite tag set to its longest-lived member", async () => {
+		const fake = createFakeRedis();
+		const driver = new RedisDriver(fake.client);
+		await driver.setEntry("long", "v", { ttlSeconds: 100, tags: ["t"] });
+		await driver.setEntry("short", "v", { ttlSeconds: 10, tags: ["t"] });
+		expect(await fake.client.ttl("cache:t:t")).toBe(100);
+		fake.lapse(10);
+		await driver.deleteByTag(["t"]);
+		expect(await driver.get("long")).toBe(null);
 	});
 });
 

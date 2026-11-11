@@ -18,6 +18,7 @@ function fakeClient() {
 		srem: vi.fn(async () => 1),
 		smembers: vi.fn(async () => []),
 		expire: vi.fn(async () => 1),
+		persist: vi.fn(async () => 0),
 		ttl: vi.fn(async () => -1),
 	};
 }

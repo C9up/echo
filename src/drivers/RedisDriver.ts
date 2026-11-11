@@ -33,6 +33,8 @@ export interface RedisClient {
 	srem(key: string, ...members: string[]): Promise<number>;
 	smembers(key: string): Promise<string[]>;
 	expire(key: string, seconds: number): Promise<number>;
+	/** Drop a key's expiry, so a tag set outlives no less than an immortal member. */
+	persist(key: string): Promise<number>;
 	ttl(key: string): Promise<number>;
 	scan?(
 		cursor: string,
@@ -392,14 +394,27 @@ export class RedisDriver implements TaggableDriver {
 
 		for (const tag of tags) {
 			const tagKey = this.#tagKey(tag);
+			// Read BEFORE the SADD. Redis answers -2 for no such key and -1 for
+			// a key with no expiry, and a set the SADD has just created reads
+			// -1 too: only this order tells a new set from a persistent one.
+			const currentTtl = await client.ttl(tagKey);
 			if (addedTags.includes(tag)) {
 				await client.sadd(tagKey, key);
 			}
-			if (physicalTtlSeconds > 0) {
-				const currentTtl = await client.ttl(tagKey);
-				if (currentTtl < 0 || indexTtl > currentTtl) {
-					await client.expire(tagKey, indexTtl);
-				}
+			// A tag set must outlive every member it indexes. It took the TTL
+			// of the last member written with one, and an immortal member never
+			// cleared that TTL: once the set lapsed, deleteByTag found nobody
+			// and the immortal entry kept being served. So an immortal member
+			// makes the set persistent, and a finite member never puts an
+			// expiry back on a persistent set. A persistent set left holding
+			// only lapsed members is emptied by the next deleteByTag of its tag.
+			if (physicalTtlSeconds === 0) {
+				if (currentTtl >= 0) await client.persist(tagKey);
+			} else if (
+				currentTtl === -2 ||
+				(currentTtl >= 0 && indexTtl > currentTtl)
+			) {
+				await client.expire(tagKey, indexTtl);
 			}
 		}
 

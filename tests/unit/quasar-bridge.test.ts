@@ -20,6 +20,7 @@ const commands = [
 	"srem",
 	"smembers",
 	"expire",
+	"persist",
 	"ttl",
 ];
 

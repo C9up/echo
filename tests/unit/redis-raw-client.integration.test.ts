@@ -217,6 +217,25 @@ describeRedis("echo on a raw ioredis client", () => {
 			expect(await raw.ttl(`${base}t:t`)).toBeGreaterThan(0);
 		});
 
+		// A finite member wrote its TTL over a set an immortal member was in,
+		// and an immortal member never cleared one: the set lapsed and
+		// deleteByTag no longer reached the immortal entry.
+		it("keeps a tag set persistent while an immortal member is in it", async () => {
+			const driver = new RedisDriver(client, base);
+			await driver.setEntry("forever", "v", { tags: ["perm"] });
+			await driver.setEntry("short", "v", { ttlSeconds: 10, tags: ["perm"] });
+			expect(await raw.ttl(`${base}t:perm`)).toBe(-1);
+
+			await driver.setEntry("short2", "v", { ttlSeconds: 10, tags: ["p2"] });
+			expect(await raw.ttl(`${base}t:p2`)).toBeGreaterThan(0);
+			await driver.setEntry("forever2", "v", { tags: ["p2"] });
+			expect(await raw.ttl(`${base}t:p2`)).toBe(-1);
+
+			await driver.deleteByTag(["perm", "p2"]);
+			expect(await driver.get("forever")).toBe(null);
+			expect(await driver.get("forever2")).toBe(null);
+		});
+
 		it("getOrSet with ttl '250ms' stores the factory value", async () => {
 			const cache = new CacheManager(new RedisDriver(client, base));
 			const value = await cache.getOrSet({

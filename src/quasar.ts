@@ -41,6 +41,7 @@ const REQUIRED = [
 	"srem",
 	"smembers",
 	"expire",
+	"persist",
 	"ttl",
 ] as const;
 

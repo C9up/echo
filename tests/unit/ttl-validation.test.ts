@@ -159,6 +159,9 @@ describe("echo > RedisDriver with a TTL in the past (bug 318)", () => {
 			async expire() {
 				return 1;
 			},
+			async persist() {
+				return 0;
+			},
 			async ttl() {
 				return -1;
 			},
