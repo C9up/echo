@@ -132,6 +132,13 @@ export interface CacheConfig {
 	emitter?: CacheEmitter;
 }
 
+/** What a factory run settled to: its own value, or the stale one standing in. */
+interface FactoryOutcome<T> {
+	value: T;
+	/** `true` when the factory produced `value`; `false` for the stale fallback. */
+	fresh: boolean;
+}
+
 /** Shared single-flight state — one map per store, threaded through namespaces. */
 interface SharedState {
 	inflight: Map<string, { promise: Promise<unknown> }>;
@@ -800,8 +807,8 @@ export class CacheManager {
 		o: NormalizedGetOrSet<T>,
 		hasStale: boolean,
 		staleValue: T | undefined,
-	): Promise<T> {
-		const run = async (): Promise<T> => {
+	): Promise<FactoryOutcome<T>> {
+		const run = async (): Promise<FactoryOutcome<T>> => {
 			try {
 				// Called a microtask later, never inline. A factory that throws
 				// before returning a promise ran this `finally` synchronously,
@@ -821,21 +828,50 @@ export class CacheManager {
 					value,
 					store: this.#name,
 				});
-				return value;
+				return { value, fresh: true };
 			} catch (error) {
 				o.onFactoryError?.(new FactoryError(o.key, error, hasStale));
-				if (hasStale && staleValue !== undefined) return staleValue;
+				if (hasStale && staleValue !== undefined) {
+					return { value: staleValue, fresh: false };
+				}
 				throw error;
 			} finally {
 				// Only this run's own record: a later leader's must survive it.
-				if (this.#shared.inflight.get(prefixed)?.promise === promise) {
+				if (this.#shared.inflight.get(prefixed) === record) {
 					this.#shared.inflight.delete(prefixed);
 				}
 			}
 		};
-		const promise = run();
-		this.#shared.inflight.set(prefixed, { promise });
-		return promise;
+		const outcome = run();
+		// What a joiner reads: the value alone. Marked handled here, since
+		// nobody may ever join; each joiner still sees a rejection on its own
+		// chain, and the leader on `outcome`.
+		const shared = outcome.then((settled) => settled.value);
+		shared.catch(() => {});
+		const record = { promise: shared };
+		this.#shared.inflight.set(prefixed, record);
+		return outcome;
+	}
+
+	/**
+	 * Report how the LEADER's call was served, once its factory settled: a
+	 * miss when the factory produced the value, as upstream reports it after
+	 * the factory has run; a graced hit when the factory failed and the stale
+	 * value stood in for it. A joiner ran no factory and reports neither.
+	 */
+	#settled<T>(key: string, outcome: FactoryOutcome<T>, leader: boolean): T {
+		if (!leader) return outcome.value;
+		if (outcome.fresh) {
+			this.#emit("cache:miss", { key, store: this.#name });
+		} else {
+			this.#emit("cache:hit", {
+				key,
+				value: outcome.value,
+				store: this.#name,
+				graced: true,
+			});
+		}
+		return outcome.value;
 	}
 
 	getOrSet<T>(key: string, ttlSeconds: number, factory: Factory<T>): Promise<T>;
@@ -866,7 +902,7 @@ export class CacheManager {
 		const record = this.#shared.inflight.get(prefixed);
 		// Joining another caller's factory, rather than running our own.
 		const joined = record !== undefined;
-		let factoryPromise: Promise<T>;
+		let factoryPromise: Promise<FactoryOutcome<T>>;
 		if (record === undefined) {
 			factoryPromise = this.#invokeFactory<T>(
 				prefixed,
@@ -877,7 +913,10 @@ export class CacheManager {
 		} else {
 			// The map holds every key's factory, whatever its type; what the
 			// leader computes for this key is what this caller reads.
-			factoryPromise = record.promise.then((value) => claimed<T>(value));
+			factoryPromise = record.promise.then((value) => ({
+				value: claimed<T>(value),
+				fresh: false,
+			}));
 		}
 
 		if (hasStale && staleValue !== undefined) {
@@ -898,7 +937,7 @@ export class CacheManager {
 				});
 				return staleValue;
 			}
-			return result;
+			return this.#settled(o.key, result, !joined);
 		}
 
 		// A joiner waits at most `lockTimeout` for the leader, stale value or
@@ -911,17 +950,17 @@ export class CacheManager {
 		if (lockMs !== undefined && (hardMs === undefined || lockMs < hardMs)) {
 			const result = await withTimeout(factoryPromise, lockMs);
 			if (result === TIMEOUT) throw new LockTimeoutError(o.key, lockMs);
-			return result;
+			return this.#settled(o.key, result, !joined);
 		}
 		if (hardMs !== undefined) {
 			const result = await withTimeout(factoryPromise, hardMs);
 			if (result === TIMEOUT) {
 				throw new TimeoutError(o.key, hardMs);
 			}
-			return result;
+			return this.#settled(o.key, result, !joined);
 		}
 
-		return factoryPromise;
+		return this.#settled(o.key, await factoryPromise, !joined);
 	}
 
 	/** Like {@link getOrSet} but the stored value never expires (bento `getOrSetForever`). */

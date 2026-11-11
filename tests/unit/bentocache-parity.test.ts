@@ -24,6 +24,66 @@ describe("echo > cache events", () => {
 		expect(seen).toEqual(["miss", "written", "hit"]);
 	});
 
+	// getOrSet reported a write and nothing else, so a hit rate computed from
+	// these events left out the main read path.
+	it("getOrSet reports a miss once its factory has run, then a hit", async () => {
+		const seen: string[] = [];
+		const c = cache();
+		c.on("cache:miss", () => seen.push("miss"));
+		c.on("cache:written", () => seen.push("written"));
+		c.on("cache:hit", () => seen.push("hit"));
+
+		await c.getOrSet({ key: "k", factory: () => 1 });
+		await c.getOrSet({ key: "k", factory: () => 2 });
+		expect(seen).toEqual(["written", "miss", "hit"]);
+	});
+
+	it("getOrSet reports one miss for a collapsed stampede, from the caller that ran the factory", async () => {
+		const misses: string[] = [];
+		const c = cache();
+		c.on("cache:miss", ({ key }) => misses.push(key));
+		let calls = 0;
+		const factory = async (): Promise<number> => {
+			calls += 1;
+			return 1;
+		};
+
+		await Promise.all([
+			c.getOrSet({ key: "k", factory }),
+			c.getOrSet({ key: "k", factory }),
+			c.getOrSet({ key: "k", factory }),
+		]);
+		expect(calls).toBe(1);
+		expect(misses).toEqual(["k"]);
+	});
+
+	it("getOrSet reports a graced hit, not a miss, when a failing factory falls back to stale", async () => {
+		vi.useFakeTimers();
+		try {
+			const seen: Array<{ event: string; graced?: boolean }> = [];
+			const c = cache();
+			await c.set({ key: "k", value: "old", ttl: 1, grace: 60 });
+			await vi.advanceTimersByTimeAsync(2000);
+			c.on("cache:miss", () => seen.push({ event: "miss" }));
+			c.on("cache:hit", ({ graced }) => seen.push({ event: "hit", graced }));
+
+			const value = await c.getOrSet({
+				key: "k",
+				ttl: 1,
+				grace: 60,
+				// Long enough that the failure, not the timeout, decides.
+				timeout: 10,
+				factory: async () => {
+					throw new Error("down");
+				},
+			});
+			expect(value).toBe("old");
+			expect(seen).toEqual([{ event: "hit", graced: true }]);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("carries the key and the store name to the listener", async () => {
 		const c = new CacheManager(new MemoryDriver(), { name: "redis" });
 		const payloads: Array<{ key: string; store: string }> = [];
