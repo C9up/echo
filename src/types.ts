@@ -147,6 +147,12 @@ export interface GetOrSetOptions<T> {
 	factory: Factory<T>;
 	ttl?: Duration;
 	grace?: Duration;
+	/**
+	 * After the factory failed and the stale value was served, how long that
+	 * value counts as fresh before the factory is tried again. Default
+	 * `'10s'` (or the store's); `0` or `null` retries on the next call.
+	 */
+	graceBackoff?: Duration;
 	/** Soft timeout: on a stale hit, return the stale value if the factory is slower, then refresh in the background. */
 	timeout?: Duration;
 	/** Hard timeout: reject with {@link TimeoutError} if the factory exceeds it (even without a stale fallback). */

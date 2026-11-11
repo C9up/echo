@@ -83,6 +83,23 @@ function resolveMs(duration: Duration | undefined): number | undefined {
 	return Math.min(seconds * 1000, MAX_TIMER_MS);
 }
 
+/** The default `graceBackoff`, as upstream's: 10 seconds. */
+const DEFAULT_GRACE_BACKOFF_SECONDS = 10;
+
+/**
+ * Resolve `graceBackoff` to seconds: the default when unset, `0` (off) for
+ * `null` or `0`. A negative or NaN one means nothing and is refused.
+ */
+function resolveBackoffSeconds(duration: Duration | undefined): number {
+	const seconds = resolveTtlSeconds(duration, DEFAULT_GRACE_BACKOFF_SECONDS);
+	if (seconds < 0) {
+		throw new InvalidDurationError(
+			`Echo: graceBackoff must be a non-negative duration, or null for none — got ${String(duration)}`,
+		);
+	}
+	return seconds;
+}
+
 const TIMEOUT: unique symbol = Symbol("echo.timeout");
 
 function withTimeout<T>(
@@ -120,6 +137,12 @@ export interface CacheConfig {
 	ttl?: Duration;
 	/** Default grace period (stale-while-revalidate) as a {@link Duration}. */
 	grace?: Duration;
+	/**
+	 * How long a stale value is served as fresh after its factory failed,
+	 * before the factory is tried again. Default `'10s'`; `0` or `null` retries
+	 * on the next call.
+	 */
+	graceBackoff?: Duration;
 	/** Default soft timeout for `getOrSet` (return stale if the factory is slower). */
 	timeout?: Duration;
 	/** Default hard timeout for `getOrSet`. */
@@ -149,6 +172,7 @@ interface NormalizedGetOrSet<T> {
 	factory: Factory<T>;
 	ttlSeconds: number;
 	graceSeconds: number;
+	graceBackoffSeconds: number;
 	timeoutMs: number | undefined;
 	hardTimeoutMs: number | undefined;
 	lockTimeoutMs: number | undefined;
@@ -168,6 +192,7 @@ export class CacheManager {
 	#prefix: string;
 	#defaultTtl: number;
 	#defaultGrace: Duration | undefined;
+	#defaultGraceBackoff: Duration | undefined;
 	#defaultTimeout: Duration | undefined;
 	#defaultHardTimeout: Duration | undefined;
 	#defaultLockTimeout: Duration | undefined;
@@ -207,6 +232,7 @@ export class CacheManager {
 		this.#prefix = config?.prefix ?? "";
 		this.#defaultTtl = resolveTtlSeconds(config?.ttl, 3600);
 		this.#defaultGrace = config?.grace;
+		this.#defaultGraceBackoff = config?.graceBackoff;
 		this.#defaultTimeout = config?.timeout;
 		this.#defaultHardTimeout = config?.hardTimeout;
 		this.#defaultLockTimeout = config?.lockTimeout;
@@ -740,6 +766,7 @@ export class CacheManager {
 				prefix: this.#prefix ? `${this.#prefix}:${ns}` : ns,
 				ttl: this.#defaultTtl,
 				grace: this.#defaultGrace,
+				graceBackoff: this.#defaultGraceBackoff,
 				timeout: this.#defaultTimeout,
 				hardTimeout: this.#defaultHardTimeout,
 				lockTimeout: this.#defaultLockTimeout,
@@ -768,6 +795,7 @@ export class CacheManager {
 				factory: c,
 				ttlSeconds: resolveTtlSeconds(b, this.#defaultTtl),
 				graceSeconds: resolveTtlSeconds(this.#defaultGrace, 0),
+				graceBackoffSeconds: resolveBackoffSeconds(this.#defaultGraceBackoff),
 				timeoutMs: resolveMs(this.#defaultTimeout),
 				hardTimeoutMs: resolveMs(this.#defaultHardTimeout),
 				lockTimeoutMs: resolveMs(this.#defaultLockTimeout),
@@ -787,6 +815,11 @@ export class CacheManager {
 			factory: a.factory,
 			ttlSeconds: resolveTtlSeconds(a.ttl, this.#defaultTtl),
 			graceSeconds: resolveTtlSeconds(a.grace ?? this.#defaultGrace, 0),
+			graceBackoffSeconds: resolveBackoffSeconds(
+				a.graceBackoff === undefined
+					? this.#defaultGraceBackoff
+					: a.graceBackoff,
+			),
 			timeoutMs: resolveMs(a.timeout ?? this.#defaultTimeout),
 			hardTimeoutMs: resolveMs(a.hardTimeout ?? this.#defaultHardTimeout),
 			lockTimeoutMs: resolveMs(a.lockTimeout ?? this.#defaultLockTimeout),
@@ -807,6 +840,7 @@ export class CacheManager {
 		o: NormalizedGetOrSet<T>,
 		hasStale: boolean,
 		staleValue: T | undefined,
+		staleTags: string[],
 	): Promise<FactoryOutcome<T>> {
 		const run = async (): Promise<FactoryOutcome<T>> => {
 			try {
@@ -832,6 +866,7 @@ export class CacheManager {
 			} catch (error) {
 				o.onFactoryError?.(new FactoryError(o.key, error, hasStale));
 				if (hasStale && staleValue !== undefined) {
+					await this.#applyGraceBackoff(prefixed, staleValue, staleTags, o);
 					return { value: staleValue, fresh: false };
 				}
 				throw error;
@@ -851,6 +886,45 @@ export class CacheManager {
 		const record = { promise: shared };
 		this.#shared.inflight.set(prefixed, record);
 		return outcome;
+	}
+
+	/**
+	 * Serve the stale value as fresh for `graceBackoff` after its factory
+	 * failed (upstream `graceBackoff`, default 10 s).
+	 *
+	 * Without it the entry stayed stale, and every request for the grace
+	 * window ran the factory again: a backend that was down got hit once per
+	 * request, since single-flight only collapses callers that overlap.
+	 *
+	 * NAMED DEVIATION: the backoff runs from NOW. Upstream adds it to the
+	 * entry's old logical expiry, which leaves an entry that went stale more
+	 * than `graceBackoff` ago still stale, so the factory is retried at once.
+	 *
+	 * Written only over the stale copy it read: an entry rewritten or deleted
+	 * while the factory ran (a `set`, a `deleteByTag`) is not overwritten, nor
+	 * an invalidated one brought back.
+	 */
+	async #applyGraceBackoff<T>(
+		prefixed: string,
+		value: T,
+		tags: string[],
+		o: NormalizedGetOrSet<T>,
+	): Promise<void> {
+		if (o.graceBackoffSeconds <= 0 || !this.#driver.setEntry) return;
+		try {
+			const current = await this.#readEntry<T>(prefixed);
+			if (current === null || !current.stale) return;
+			await this.#driver.setEntry(prefixed, value, {
+				expiresAt: Date.now() + o.graceBackoffSeconds * 1000,
+				graceSeconds: o.graceSeconds,
+				// Already scoped to the namespace: they are what the driver read.
+				tags,
+			});
+		} catch {
+			// The stale value is still served. The factory's own failure is
+			// what `onFactoryError` reports; a store too unwell to take the
+			// backoff only means the factory is tried again sooner.
+		}
 	}
 
 	/**
@@ -898,6 +972,7 @@ export class CacheManager {
 
 		const hasStale = entry?.stale === true && o.graceSeconds > 0;
 		const staleValue = hasStale ? entry.value : undefined;
+		const staleTags = hasStale ? (entry.tags ?? []) : [];
 
 		const record = this.#shared.inflight.get(prefixed);
 		// Joining another caller's factory, rather than running our own.
@@ -909,6 +984,7 @@ export class CacheManager {
 				o,
 				hasStale,
 				staleValue,
+				staleTags,
 			);
 		} else {
 			// The map holds every key's factory, whatever its type; what the

@@ -57,6 +57,8 @@ export interface StoreConfig {
 	 */
 	ttl?: Duration;
 	grace?: Duration;
+	/** How long a stale value stands in after its factory failed (default `'10s'`). */
+	graceBackoff?: Duration;
 	timeout?: Duration;
 	hardTimeout?: Duration;
 	lockTimeout?: Duration;
@@ -319,6 +321,7 @@ export class CacheStoreManager {
 			// The store's own, or the one every store inherits.
 			ttl: cfg.ttl ?? this.#config.ttl,
 			grace: cfg.grace,
+			graceBackoff: cfg.graceBackoff,
 			timeout: cfg.timeout,
 			hardTimeout: cfg.hardTimeout,
 			lockTimeout: cfg.lockTimeout,

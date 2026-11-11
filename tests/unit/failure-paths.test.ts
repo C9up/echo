@@ -32,6 +32,101 @@ describe("echo failure paths > grace / stale-while-revalidate", () => {
 		});
 		expect(out).toBe("v1"); // stale is served, the error is NOT propagated
 	});
+
+	// Without a backoff the entry stayed stale after a failed refresh, so every
+	// request for the whole grace window ran the factory against a backend
+	// that was down.
+	describe("graceBackoff", () => {
+		const failing = () => {
+			const counter = { calls: 0 };
+			const factory = async (): Promise<string> => {
+				counter.calls += 1;
+				throw new Error("upstream down");
+			};
+			return { counter, factory };
+		};
+
+		async function staleCache(
+			config: ConstructorParameters<typeof CacheManager>[1] = {},
+		): Promise<CacheManager> {
+			const cache = new CacheManager(new MemoryDriver(), config);
+			await cache.set({ key: "k", value: "v1", ttl: 1, grace: 3600 });
+			await vi.advanceTimersByTimeAsync(2000);
+			return cache;
+		}
+
+		it("does not run a failing factory again before the backoff (default 10s)", async () => {
+			const cache = await staleCache();
+			const { counter, factory } = failing();
+			for (let i = 0; i < 5; i++) {
+				expect(
+					await cache.getOrSet({ key: "k", ttl: 1, grace: 3600, factory }),
+				).toBe("v1");
+				// Let the background refresh settle before the next request.
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(counter.calls).toBe(1);
+
+			await vi.advanceTimersByTimeAsync(10_001);
+			await cache.getOrSet({ key: "k", ttl: 1, grace: 3600, factory });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(counter.calls).toBe(2);
+		});
+
+		it("takes the backoff from the store config and from the call", async () => {
+			const cache = await staleCache({ graceBackoff: "1m" });
+			const { counter, factory } = failing();
+			await cache.getOrSet({ key: "k", ttl: 1, grace: 3600, factory });
+			await vi.advanceTimersByTimeAsync(30_000);
+			await cache.getOrSet({ key: "k", ttl: 1, grace: 3600, factory });
+			await vi.advanceTimersByTimeAsync(0);
+			expect(counter.calls).toBe(1);
+
+			const perCall = await staleCache({ graceBackoff: "1m" });
+			const second = failing();
+			for (let i = 0; i < 3; i++) {
+				await perCall.getOrSet({
+					key: "k",
+					ttl: 1,
+					grace: 3600,
+					graceBackoff: 0,
+					factory: second.factory,
+				});
+				await vi.advanceTimersByTimeAsync(0);
+			}
+			expect(second.counter.calls).toBe(3);
+		});
+
+		it("does not bring back a value invalidated while the factory ran", async () => {
+			const cache = await staleCache();
+			let release: (reason: Error) => void = () => {};
+			const factory = (): Promise<string> =>
+				new Promise<string>((_resolve, reject) => {
+					release = reject;
+				});
+			const served = cache.getOrSet({ key: "k", ttl: 1, grace: 3600, factory });
+			// The soft timeout (0) is a timer: let it fire so the stale value is
+			// served while the factory is still running.
+			await vi.advanceTimersByTimeAsync(0);
+			expect(await served).toBe("v1");
+			await cache.delete("k");
+			release(new Error("upstream down"));
+			await vi.advanceTimersByTimeAsync(0);
+
+			expect(await cache.get({ key: "k", grace: 3600 })).toBeUndefined();
+		});
+
+		it("refuses a negative backoff", async () => {
+			const cache = await staleCache();
+			await expect(
+				cache.getOrSet({
+					key: "k",
+					graceBackoff: -1,
+					factory: () => "v",
+				}),
+			).rejects.toMatchObject({ code: "E_ECHO_INVALID_DURATION" });
+		});
+	});
 });
 
 describe("echo failure paths > factory error without grace", () => {
