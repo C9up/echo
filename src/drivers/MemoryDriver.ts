@@ -146,22 +146,18 @@ export class MemoryDriver implements TaggableDriver {
 	}
 
 	/**
-	 * Drop entries until the store fits under its ceilings.
+	 * Drop the least recently used entries until the store fits under its
+	 * ceilings: the Map's order, since a read moves its key to the end as a
+	 * write does.
 	 *
-	 * Expired ones go first — evicting a live entry while a dead one sits in
-	 * the map would throw away a value someone still wants. Only if that is not
-	 * enough does it take the least recently used: the Map's order, since a
-	 * read moves its key to the end as a write does.
+	 * The least recently used, whatever has expired elsewhere in the order.
+	 * Hunting for expired entries first walked the whole map on every write
+	 * at the ceiling, a cost proportional to the ceiling a large working set
+	 * pays on each write; expired entries are the sweep's, and a read drops
+	 * one it finds. Upstream's LRU evicts the same way.
 	 */
 	#enforceCeiling(): void {
 		if (this.#fits()) return;
-		const now = Date.now();
-		for (const [key, entry] of this.#store) {
-			if (this.#fits()) return;
-			if (entry.staleUntil > 0 && entry.staleUntil < now) {
-				this.#evict(key, entry);
-			}
-		}
 		for (const [key, entry] of this.#store) {
 			if (this.#fits()) return;
 			this.#evict(key, entry);

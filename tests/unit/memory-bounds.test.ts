@@ -6,7 +6,7 @@
  * grew until the process ran out of memory — and when it had one, reads
  * never refreshed recency, so the hottest key was the first to go.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import { drivers } from "../../src/StoreManager.js";
 
@@ -66,6 +66,33 @@ describe("echo > memory driver evicts least recently USED (bug 322)", () => {
 		expect(await driver.get("hot")).toBe("hot");
 		expect(await driver.get("cold")).toBeNull();
 		expect(await driver.get("new")).toBe("new");
+	});
+
+	// At the ceiling every write walked the whole map hunting for an expired
+	// entry before evicting one, so a store raised to hold a large working set
+	// paid a cost proportional to its size on every write. The only way a
+	// write could drop an expired entry from the MIDDLE of the order is that
+	// walk; without it, a write takes the least recently used entry, in
+	// constant work, and the sweep (or a read) removes what has expired.
+	it("a write at the ceiling evicts the least recently used without walking the store", async () => {
+		vi.useFakeTimers();
+		try {
+			const driver = track(new MemoryDriver({ maxItems: 3 }));
+			await driver.set("oldest", 1);
+			await driver.set("expiring", 2, 1);
+			await driver.set("recent", 3);
+			vi.advanceTimersByTime(2_000);
+
+			await driver.set("new", 4);
+
+			expect(await driver.get("oldest")).toBeNull();
+			expect(await driver.get("recent")).toBe(3);
+			expect(await driver.get("new")).toBe(4);
+			// The expired entry is still the sweep's to remove.
+			expect(await driver.get("expiring")).toBeNull();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
