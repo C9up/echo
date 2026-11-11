@@ -169,6 +169,16 @@ export function store(options?: Omit<StoreConfig, "driver">): Store {
 	return new Store(options);
 }
 
+/** Either accepted form of a store: a {@link Store} builder, or `{ driver, … }`. */
+function isStoreDeclaration(value: unknown): value is StoreConfig | Store {
+	if (value instanceof Store) return true;
+	return (
+		typeof value === "object" &&
+		value !== null &&
+		typeof Reflect.get(value, "driver") === "function"
+	);
+}
+
 /** Normalise either accepted form to the one the manager reads. */
 function entryOf(config: StoreConfig | Store): StoreConfig {
 	return config instanceof Store ? config.entry() : config;
@@ -267,11 +277,22 @@ export class CacheStoreManager {
 	/**
 	 * A store declared under `name` in the config's OWN keys: a plain lookup
 	 * would answer `toString` or `constructor` with an Object.prototype member.
+	 *
+	 * And one that IS a store. A config is read at runtime, from a file the
+	 * type checker may never have seen: an own key holding `{}` or `null`
+	 * passed the lookup, then failed on `cfg.driver(...)` with a bare
+	 * TypeError, far from the line at fault.
 	 */
 	#declared(name: string): MultiStoreConfig["stores"][string] | undefined {
-		return Object.hasOwn(this.#config.stores, name)
-			? this.#config.stores[name]
-			: undefined;
+		if (!Object.hasOwn(this.#config.stores, name)) return undefined;
+		const declared: unknown = this.#config.stores[name];
+		if (!isStoreDeclaration(declared)) {
+			throw new EchoError(
+				"E_ECHO_INVALID_CONFIG",
+				`Echo: cache store "${name}" is not a store — declare it with store().useL1Layer(…) or as { driver: drivers.memory() }`,
+			);
+		}
+		return declared;
 	}
 
 	/** The store `use()` answers with no name (upstream `defaultStoreName`). */

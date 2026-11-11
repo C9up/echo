@@ -148,6 +148,28 @@ describe("echo > echo's own error codes", () => {
 		}
 	});
 
+	// An own key whose value is not a store passed the lookup, then failed on
+	// `cfg.driver(...)` with a bare TypeError, far from the config at fault.
+	it("an own store entry that is not a store is refused with E_ECHO_INVALID_CONFIG", () => {
+		const malformed: unknown[] = [
+			{},
+			null,
+			() => {},
+			{ driver: "memory" },
+			"memory",
+		];
+		for (const bad of malformed) {
+			const stores = { a: { driver: drivers.memory() }, bad };
+			const viaUse: CacheStoreManager = Reflect.construct(CacheStoreManager, [
+				{ default: "a", stores },
+			]);
+			expect(() => viaUse.use("bad")).toThrow(code("E_ECHO_INVALID_CONFIG"));
+			expect(() =>
+				Reflect.construct(CacheStoreManager, [{ default: "bad", stores }]),
+			).toThrow(code("E_ECHO_INVALID_CONFIG"));
+		}
+	});
+
 	it("tags on a driver without them is E_ECHO_NOT_TAGGABLE", async () => {
 		const cache = new CacheManager(plain());
 		await expect(cache.deleteByTag(["t"])).rejects.toThrow(
