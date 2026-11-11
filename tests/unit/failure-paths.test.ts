@@ -47,6 +47,35 @@ describe("echo failure paths > factory error without grace", () => {
 			}),
 		).rejects.toThrow("boom");
 	});
+
+	it("runs the factory again after it threw synchronously", async () => {
+		const cache = new CacheManager(new MemoryDriver());
+		let calls = 0;
+		// Not async: the throw happens inside the call itself, before any
+		// promise exists, as a guard or a JSON.parse at the top of a factory does.
+		const factory = (): number => {
+			calls += 1;
+			if (calls === 1) throw new Error("sync boom");
+			return 42;
+		};
+		await expect(cache.getOrSet({ key: "k", factory })).rejects.toThrow(
+			"sync boom",
+		);
+		expect(await cache.getOrSet({ key: "k", factory })).toBe(42);
+		expect(await cache.getOrSet({ key: "k", factory })).toBe(42);
+		expect(calls).toBe(2);
+	});
+
+	it("refuses an object-form call whose factory is not a function", async () => {
+		const cache = new CacheManager(new MemoryDriver());
+		const call = (): Promise<unknown> =>
+			Reflect.apply(cache.getOrSet, cache, [{ key: "k", factory: 42 }]);
+		await expect(call()).rejects.toMatchObject({
+			code: "E_ECHO_INVALID_ARGUMENT",
+		});
+		// And the refusal leaves nothing behind for the key.
+		expect(await cache.getOrSet({ key: "k", factory: () => "v" })).toBe("v");
+	});
 });
 
 describe("echo failure paths > single-flight (stampede)", () => {

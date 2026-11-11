@@ -757,6 +757,14 @@ export class CacheManager {
 				tags: [],
 			};
 		}
+		// Checked in this form too: a config value or a JSON body reaching here
+		// untyped made the call fail with a bare TypeError from deep inside the
+		// single-flight bookkeeping, instead of a refusal naming the argument.
+		if (typeof a.factory !== "function") {
+			throw new InvalidArgumentError(
+				"Echo: getOrSet({ key, factory }) requires a factory function",
+			);
+		}
 		return {
 			key: a.key,
 			factory: a.factory,
@@ -771,9 +779,11 @@ export class CacheManager {
 	}
 
 	/**
-	 * Run (or join) the single-flight factory for `prefixed`. Resolves to the
-	 * fresh value on success; on failure it calls `onFactoryError` and either
-	 * resolves to `staleValue` (when a stale fallback exists) or rejects.
+	 * Run the single-flight factory for `prefixed` and register it as the
+	 * key's in-flight record. Resolves to the fresh value on success; on
+	 * failure it calls `onFactoryError` and either resolves to `staleValue`
+	 * (when a stale fallback exists) or rejects. The record is removed once it
+	 * settles, whichever way.
 	 */
 	#invokeFactory<T>(
 		prefixed: string,
@@ -783,7 +793,12 @@ export class CacheManager {
 	): Promise<T> {
 		const run = async (): Promise<T> => {
 			try {
-				const value = await o.factory();
+				// Called a microtask later, never inline. A factory that throws
+				// before returning a promise ran this `finally` synchronously,
+				// BEFORE the record below was stored: the rejected promise then
+				// stayed in the map for good, and every later call for the key
+				// joined it instead of running the factory again.
+				const value = await Promise.resolve().then(() => o.factory());
 				await this.#writeValue(
 					prefixed,
 					value,
@@ -802,10 +817,15 @@ export class CacheManager {
 				if (hasStale && staleValue !== undefined) return staleValue;
 				throw error;
 			} finally {
-				this.#shared.inflight.delete(prefixed);
+				// Only this run's own record: a later leader's must survive it.
+				if (this.#shared.inflight.get(prefixed)?.promise === promise) {
+					this.#shared.inflight.delete(prefixed);
+				}
 			}
 		};
-		return run();
+		const promise = run();
+		this.#shared.inflight.set(prefixed, { promise });
+		return promise;
 	}
 
 	getOrSet<T>(key: string, ttlSeconds: number, factory: Factory<T>): Promise<T>;
@@ -844,7 +864,6 @@ export class CacheManager {
 				hasStale,
 				staleValue,
 			);
-			this.#shared.inflight.set(prefixed, { promise: factoryPromise });
 		} else {
 			// The map holds every key's factory, whatever its type; what the
 			// leader computes for this key is what this caller reads.
