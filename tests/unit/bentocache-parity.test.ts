@@ -154,6 +154,43 @@ describe("echo > store manager", () => {
 		expect(await m.use("other").get({ key: "k" })).toBeUndefined();
 	});
 
+	// A store this process had not touched yet was skipped: a maintenance
+	// script's clearAll left another process's keys in place.
+	it("clears and prunes every configured store, built or not", async () => {
+		vi.useFakeTimers();
+		try {
+			// One backing store shared by two managers, as two processes share
+			// a Redis.
+			const shared = new MemoryDriver();
+			const config = () => ({
+				default: "memory",
+				stores: {
+					memory: { driver: drivers.memory() },
+					shared: { driver: () => shared },
+				},
+			});
+			const writer = new CacheStoreManager(config());
+			await writer.use("shared").set({ key: "k", value: 1 });
+			await writer
+				.use("shared")
+				.set({ key: "short", value: 1, ttl: 1, tags: ["t"] });
+
+			const maintenance = new CacheStoreManager(config());
+			vi.advanceTimersByTime(2_000);
+			await maintenance.prune();
+			// Read through the tag index, which only a prune (not a lazy read
+			// of the key) empties.
+			expect(shared.tagCount()).toBe(0);
+			expect(await shared.get("k")).toBe(1);
+
+			await new CacheStoreManager(config()).clearAll();
+			expect(await shared.get("k")).toBeNull();
+			shared.destroy();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it("disconnects every built store without throwing", async () => {
 		const m = manager();
 		m.use("memory");

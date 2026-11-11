@@ -393,14 +393,29 @@ export class CacheStoreManager {
 		return this;
 	}
 
-	/** Clear every store that has been built (bentocache `clearAll`). */
-	async clearAll(): Promise<void> {
-		await Promise.all([...this.#built.values()].map((m) => m.clear()));
+	/**
+	 * Every store the config declares, built here if this process has not
+	 * used it yet. Walking only the built ones skipped a store another
+	 * process writes to: a maintenance script's `clearAll` left its keys.
+	 */
+	#everyStore(): CacheManager[] {
+		return Object.keys(this.#config.stores).map((name) => this.use(name));
 	}
 
-	/** Prune expired entries in every built store (bentocache `prune`). */
+	/** Clear every configured store (bentocache `clearAll`). */
+	async clearAll(): Promise<void> {
+		await Promise.all(this.#everyStore().map((m) => m.clear()));
+	}
+
+	/**
+	 * Prune expired entries in every configured store (bentocache `prune`).
+	 *
+	 * NAMED DEVIATION: upstream's manager prunes the default store only; a
+	 * store that needs pruning is no less in need of it for not being the
+	 * default, so every configured one is reached, as `clearAll` does.
+	 */
 	async prune(): Promise<void> {
-		await Promise.all([...this.#built.values()].map((m) => m.prune()));
+		await Promise.all(this.#everyStore().map((m) => m.prune()));
 	}
 
 	/**
