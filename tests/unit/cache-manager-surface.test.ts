@@ -198,6 +198,41 @@ describe("echo > expiring without deleting", () => {
 
 		expect(await cache.expire({ key: "k" })).toBe(true);
 	});
+
+	// The stale copy was rewritten without its tags: it went on being served
+	// for the whole grace window while deleteByTag no longer reached it.
+	it("keeps the entry's tags, so deleteByTag still reaches the stale copy", async () => {
+		const { cache, driver } = make({ grace: "1h" });
+		await cache.set({ key: "perms", value: ["admin"], tags: ["user:1"] });
+
+		expect(await cache.expire("perms")).toBe(true);
+		expect(driver.getEntrySync("perms")?.tags).toEqual(["user:1"]);
+
+		await cache.deleteByTag(["user:1"]);
+		expect(await cache.get("perms")).toBeUndefined();
+	});
+
+	it("keeps a namespaced entry's tags scoped to its namespace", async () => {
+		const { cache } = make({ grace: "1h" });
+		const tenant = cache.namespace("a");
+		await tenant.set({ key: "perms", value: ["admin"], tags: ["user:1"] });
+		await tenant.expire("perms");
+
+		await tenant.deleteByTag(["user:1"]);
+		expect(await tenant.get("perms")).toBeUndefined();
+	});
+
+	it("emits cache:expire with the key and the store", async () => {
+		const { cache } = make({ grace: 60, name: "main" });
+		const seen: unknown[] = [];
+		cache.on("cache:expire", (payload) => seen.push(payload));
+		await cache.set({ key: "k", value: "v" });
+
+		await cache.expire("k");
+		await cache.expire("missing");
+
+		expect(seen).toEqual([{ key: "k", store: "main" }]);
+	});
 });
 
 describe("echo > namespaces", () => {

@@ -192,6 +192,8 @@ export interface CacheEventMap {
 	"cache:written": { key: string; value: unknown; store: string };
 	"cache:deleted": { key: string; store: string };
 	"cache:cleared": { store: string };
+	/** A key marked stale by `expire()`, kept for its grace window or dropped. */
+	"cache:expire": { key: string; store: string };
 }
 
 /**

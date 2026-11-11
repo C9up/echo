@@ -128,7 +128,7 @@ export interface CacheConfig {
 	lockTimeout?: Duration;
 	/** Store name reported in events (default `"default"`). */
 	name?: string;
-	/** Optional event emitter (`cache:hit` / `miss` / `written` / `deleted` / `cleared`). */
+	/** Optional event emitter (`cache:hit` / `miss` / `written` / `deleted` / `cleared` / `expire`). */
 	emitter?: CacheEmitter;
 }
 
@@ -178,6 +178,7 @@ export class CacheManager {
 		"cache:written": new Set(),
 		"cache:deleted": new Set(),
 		"cache:cleared": new Set(),
+		"cache:expire": new Set(),
 	};
 	#shared: SharedState;
 	/**
@@ -634,18 +635,27 @@ export class CacheManager {
 		const graceSeconds = resolveTtlSeconds(this.#defaultGrace, 0);
 		const entry = await this.#readEntry<unknown>(prefixed);
 		if (entry === null) return false;
+		let expired: boolean;
 		if (graceSeconds > 0 && this.#driver.setEntry) {
 			// Mark the entry stale RIGHT NOW (logical expiry one ms in the past) while
 			// keeping it physically for the grace window. A positive `ttlSeconds`
 			// would leave a brief fresh window during which the value is still served
 			// and the factory never runs.
+			//
+			// With its tags, as the driver read them (already scoped to this
+			// namespace): rewritten without them, the stale copy was served for
+			// the whole grace window while deleteByTag no longer reached it.
 			await this.#driver.setEntry(prefixed, entry.value, {
 				expiresAt: Date.now() - 1,
 				graceSeconds,
+				tags: entry.tags ?? [],
 			});
-			return true;
+			expired = true;
+		} else {
+			expired = await this.#driver.delete(prefixed);
 		}
-		return this.#driver.delete(prefixed);
+		if (expired) this.#emit("cache:expire", { key, store: this.#name });
+		return expired;
 	}
 
 	/**

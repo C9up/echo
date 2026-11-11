@@ -251,6 +251,7 @@ export class CacheStoreManager {
 		"cache:written": new Set(),
 		"cache:deleted": new Set(),
 		"cache:cleared": new Set(),
+		"cache:expire": new Set(),
 	};
 
 	constructor(config: MultiStoreConfig) {
@@ -316,6 +317,7 @@ export class CacheStoreManager {
 		replay("cache:written");
 		replay("cache:deleted");
 		replay("cache:cleared");
+		replay("cache:expire");
 		// So `cache.use('other')` works on whichever store the provider
 		// published — upstream's manager is one object that both operates on
 		// the default store and reaches the named ones.
