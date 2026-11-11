@@ -170,4 +170,23 @@ describe("echo > memory driver tag index stays bounded (bug 323)", () => {
 		await driver.deleteByTag(["shared"]);
 		expect(await driver.get("b")).toBeNull();
 	});
+
+	// A value under maxEntrySize but over maxSize was evicted by its own
+	// insert, then indexed under its tags anyway: the index pointed at a key
+	// the store did not hold, and a later deleteByTag of the old tag purged
+	// the fresh value written under a different one.
+	it("an entry evicted by its own insert leaves nothing in the tag index", async () => {
+		const driver = track(new MemoryDriver({ maxSize: 64, maxEntrySize: 4096 }));
+		await driver.set("other", 1);
+		await driver.setWithTags("k", "x".repeat(100), ["old"]);
+		expect(await driver.get("k")).toBeNull();
+		expect(driver.tagCount()).toBe(0);
+		// Refused up front rather than inserted: it could never fit, and on its
+		// way out it took every other entry with it.
+		expect(await driver.get("other")).toBe(1);
+
+		await driver.setWithTags("k", "small", ["new"]);
+		await driver.deleteByTag(["old"]);
+		expect(await driver.get("k")).toBe("small");
+	});
 });

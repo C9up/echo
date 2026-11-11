@@ -27,7 +27,8 @@ export interface MemoryDriverOptions {
 	/**
 	 * Largest single value, in bytes or as `'1mb'`. A bigger one is not
 	 * stored, and the key's previous value goes with it. Defaults to
-	 * `maxSize` when that is set. Needs `serialize`.
+	 * `maxSize` when that is set, and a value over `maxSize` is never stored
+	 * whatever this says. Needs `serialize`.
 	 */
 	maxEntrySize?: number | string;
 	/**
@@ -282,9 +283,15 @@ export class MemoryDriver implements TaggableDriver {
 		// previous entry and its tags exactly as they were.
 		const stored = this.#serialize ? toJson(value) : value;
 		const size = typeof stored === "string" ? Buffer.byteLength(stored) : 0;
-		if (this.#maxEntrySize > 0 && size > this.#maxEntrySize) {
+		if (
+			(this.#maxEntrySize > 0 && size > this.#maxEntrySize) ||
+			(this.#maxSize > 0 && size > this.#maxSize)
+		) {
 			// Too big to keep. The previous value goes too, as upstream's LRU
-			// does: a skipped write must not leave an older value served.
+			// does: a skipped write must not leave an older value served. A
+			// value over the whole store's bound counts as too big whatever
+			// maxEntrySize says: inserted, it evicted every other entry and
+			// then itself.
 			this.#deleteEntry(key);
 			return;
 		}
@@ -326,7 +333,10 @@ export class MemoryDriver implements TaggableDriver {
 			size,
 		});
 		this.#size += size;
-		this.#enforceCeiling();
+		// Indexed BEFORE the ceiling is enforced, so an eviction that takes
+		// this very entry untags it. Indexed after, an entry the ceiling had
+		// just dropped stayed in its tags' sets, and a later deleteByTag of
+		// one of them purged whatever value the key held by then.
 		for (const tag of tags) {
 			let set = this.#tagIndex.get(tag);
 			if (!set) {
@@ -335,6 +345,7 @@ export class MemoryDriver implements TaggableDriver {
 			}
 			set.add(key);
 		}
+		this.#enforceCeiling();
 	}
 
 	async set(key: string, value: unknown, ttlSeconds?: number): Promise<void> {
