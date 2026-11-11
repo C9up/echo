@@ -2,7 +2,7 @@
 
 > Pluggable cache contract for the Ream framework, with memory + Redis drivers.
 
-Part of **[Ream](https://github.com/C9up/ream)** — a Rust-powered, AdonisJS-compatible Node.js framework. Independent, publishable package.
+Part of **[Ream](https://github.com/C9up/ream)** — a Rust-powered Node.js framework. Independent, publishable package.
 
 ## Installation
 
