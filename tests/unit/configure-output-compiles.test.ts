@@ -111,17 +111,21 @@ describe("echo > the memory driver's ceiling", () => {
 		expect(await driver.get("d")).toBe("d");
 	});
 
-	it("drops an expired entry before a live one", async () => {
-		// Evicting a live entry while a dead one sits in the map would throw
-		// away a value someone still wants.
-		const driver = drivers.memory({ maxItems: 2 })();
-		await driver.set("dead", "dead", 0.001);
-		await driver.set("live", "live");
-		await new Promise((resolve) => setTimeout(resolve, 20));
-		await driver.set("fresh", "fresh");
+	it("evicts the oldest entry first, an expired one included", async () => {
+		vi.useFakeTimers();
+		try {
+			const driver = drivers.memory({ maxItems: 2 })();
+			await driver.set("dead", "dead", 0.001);
+			await driver.set("live", "live");
+			vi.advanceTimersByTime(2);
+			await driver.set("fresh", "fresh");
 
-		expect(await driver.get("live")).toBe("live");
-		expect(await driver.get("fresh")).toBe("fresh");
+			expect(await driver.get("dead")).toBeNull();
+			expect(await driver.get("live")).toBe("live");
+			expect(await driver.get("fresh")).toBe("fresh");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("keeps no ceiling when explicitly asked for none", async () => {

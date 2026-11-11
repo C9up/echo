@@ -233,9 +233,15 @@ describe("echo > the config shapes upstream documents", () => {
 			stores: { memory: store().useL1Layer(drivers.memory()) },
 		});
 
-		await manager.use().set({ key: "k", value: 1 });
-		await new Promise((resolve) => setTimeout(resolve, 5));
-
-		expect(await manager.use().get({ key: "k" })).toBeUndefined();
+		vi.useFakeTimers();
+		try {
+			await manager.use().set({ key: "k", value: 1 });
+			vi.advanceTimersByTime(1);
+			expect(await manager.use().get({ key: "k" })).toBe(1);
+			vi.advanceTimersByTime(1);
+			expect(await manager.use().get({ key: "k" })).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });

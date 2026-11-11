@@ -194,15 +194,22 @@ describe("echo failure paths > single-flight (stampede)", () => {
 
 describe("echo failure paths > hard timeout", () => {
 	it("throws TimeoutError when the factory exceeds the hard timeout", async () => {
-		const cache = new CacheManager(new MemoryDriver());
-		await expect(
-			cache.getOrSet({
-				key: "k",
-				ttl: 60,
-				hardTimeout: 0.05, // Duration is in seconds → 50ms
-				factory: () => new Promise<string>(() => {}), // never resolves
-			}),
-		).rejects.toBeInstanceOf(TimeoutError);
+		vi.useFakeTimers();
+		try {
+			const cache = new CacheManager(new MemoryDriver());
+			const call = cache
+				.getOrSet({
+					key: "k",
+					ttl: 60,
+					hardTimeout: 0.05, // Duration is in seconds → 50ms
+					factory: () => new Promise<string>(() => {}), // never resolves
+				})
+				.catch((error: unknown) => error);
+			await vi.advanceTimersByTimeAsync(50);
+			expect(await call).toBeInstanceOf(TimeoutError);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
@@ -322,7 +329,9 @@ describe("echo failure paths > an Adonis-shaped emitter", () => {
 			// observer, not a participant.
 			await cache.set("k", "v", 60);
 			expect(await cache.get("k")).toBe("v");
-			await new Promise((resolve) => setTimeout(resolve, 15));
+			// Past every microtask, where the rejection is either handled or
+			// reported: no clock involved.
+			await new Promise((resolve) => setImmediate(resolve));
 
 			expect(rejections).toEqual([]);
 			expect(written.join("")).toContain("listener failed");

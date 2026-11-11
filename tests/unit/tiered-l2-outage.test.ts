@@ -7,7 +7,7 @@
  * can open a circuit breaker; so does this now — for reads and writes.
  * Invalidations still report a failed L2: see the last block.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import {
@@ -26,6 +26,7 @@ function memory(): MemoryDriver {
 
 afterEach(() => {
 	for (const driver of created.splice(0)) driver.destroy();
+	vi.useRealTimers();
 });
 
 /** An L2 whose every command fails, counting the attempts. */
@@ -125,6 +126,7 @@ describe("echo > tiered store with its L2 down (bug 325)", () => {
 	});
 
 	it("the breaker closes again once its duration has passed", async () => {
+		vi.useFakeTimers();
 		const l2 = downL2();
 		const cache = new CacheManager(
 			new TieredDriver({
@@ -135,8 +137,12 @@ describe("echo > tiered store with its L2 down (bug 325)", () => {
 		);
 
 		await cache.get({ key: "a" });
-		await new Promise((resolve) => setTimeout(resolve, 40));
+		vi.advanceTimersByTime(19);
 		await cache.get({ key: "b" });
+		// Still open just before its duration: the L2 is skipped.
+		expect(l2.calls()).toBe(1);
+		vi.advanceTimersByTime(1);
+		await cache.get({ key: "c" });
 
 		expect(l2.calls()).toBe(2);
 	});

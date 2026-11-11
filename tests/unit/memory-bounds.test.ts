@@ -18,6 +18,7 @@ function track(driver: MemoryDriver): MemoryDriver {
 
 afterEach(() => {
 	for (const driver of created.splice(0)) driver.destroy();
+	vi.useRealTimers();
 });
 
 async function fill(driver: MemoryDriver, count: number): Promise<void> {
@@ -76,23 +77,19 @@ describe("echo > memory driver evicts least recently USED (bug 322)", () => {
 	// constant work, and the sweep (or a read) removes what has expired.
 	it("a write at the ceiling evicts the least recently used without walking the store", async () => {
 		vi.useFakeTimers();
-		try {
-			const driver = track(new MemoryDriver({ maxItems: 3 }));
-			await driver.set("oldest", 1);
-			await driver.set("expiring", 2, 1);
-			await driver.set("recent", 3);
-			vi.advanceTimersByTime(2_000);
+		const driver = track(new MemoryDriver({ maxItems: 3 }));
+		await driver.set("oldest", 1);
+		await driver.set("expiring", 2, 1);
+		await driver.set("recent", 3);
+		vi.advanceTimersByTime(2_000);
 
-			await driver.set("new", 4);
+		await driver.set("new", 4);
 
-			expect(await driver.get("oldest")).toBeNull();
-			expect(await driver.get("recent")).toBe(3);
-			expect(await driver.get("new")).toBe(4);
-			// The expired entry is still the sweep's to remove.
-			expect(await driver.get("expiring")).toBeNull();
-		} finally {
-			vi.useRealTimers();
-		}
+		expect(await driver.get("oldest")).toBeNull();
+		expect(await driver.get("recent")).toBe(3);
+		expect(await driver.get("new")).toBe(4);
+		// The expired entry is still the sweep's to remove.
+		expect(await driver.get("expiring")).toBeNull();
 	});
 });
 
@@ -168,9 +165,10 @@ describe("echo > memory driver tag index stays bounded (bug 323)", () => {
 	});
 
 	it("expiry drops the tags it emptied", async () => {
+		vi.useFakeTimers();
 		const driver = track(new MemoryDriver());
 		await driver.setWithTags("a", 1, ["ta"], 0.001);
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		vi.advanceTimersByTime(2);
 
 		await driver.prune();
 

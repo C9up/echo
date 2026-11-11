@@ -333,46 +333,58 @@ describe("echo > getOrSet timeouts", () => {
 		).rejects.toThrow(/requires a factory function/);
 	});
 
+	// On the test's clock: which of the factory and the timeout lands first is
+	// the behaviour under test, and a real one raced it.
 	it("gives up on a slow factory rather than holding the request open", async () => {
+		vi.useFakeTimers();
 		const { cache } = make();
-
-		await expect(
-			cache.getOrSet({
+		const call = cache
+			.getOrSet({
 				key: "k",
 				factory: () =>
 					new Promise((resolve) => setTimeout(() => resolve("late"), 200)),
 				hardTimeout: "10ms",
-			}),
-		).rejects.toBeInstanceOf(TimeoutError);
+			})
+			.catch((error: unknown) => error);
+
+		await vi.advanceTimersByTimeAsync(10);
+		expect(await call).toBeInstanceOf(TimeoutError);
 	});
 
 	it("serves the stale value when the refresh outruns the soft timeout", async () => {
+		vi.useFakeTimers();
 		const { cache } = make({ grace: 60 });
 		await cache.set({ key: "k", value: "old", ttl: 0.05 });
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		vi.advanceTimersByTime(51);
 
-		const value = await cache.getOrSet({
+		const call = cache.getOrSet({
 			key: "k",
 			factory: () =>
 				new Promise((resolve) => setTimeout(() => resolve("fresh"), 300)),
 			timeout: "10ms",
 		});
+		await vi.advanceTimersByTimeAsync(10);
 
 		// The reader gets the stale value now; the refresh carries on behind it.
-		expect(value).toBe("old");
+		expect(await call).toBe("old");
+		await vi.advanceTimersByTimeAsync(290);
+		expect(await cache.get("k")).toBe("fresh");
 	});
 
 	it("waits for a fast refresh instead of serving stale", async () => {
+		vi.useFakeTimers();
 		const { cache } = make({ grace: 60 });
 		await cache.set({ key: "k", value: "old", ttl: 0.05 });
-		await new Promise((resolve) => setTimeout(resolve, 100));
+		vi.advanceTimersByTime(51);
 
-		const value = await cache.getOrSet({
+		const call = cache.getOrSet({
 			key: "k",
-			factory: async () => "fresh",
+			factory: () =>
+				new Promise((resolve) => setTimeout(() => resolve("fresh"), 199)),
 			timeout: "200ms",
 		});
+		await vi.advanceTimersByTimeAsync(199);
 
-		expect(value).toBe("fresh");
+		expect(await call).toBe("fresh");
 	});
 });

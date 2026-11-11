@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 
@@ -7,6 +7,10 @@ describe("cache > MemoryDriver", () => {
 
 	beforeEach(() => {
 		cache = new CacheManager(new MemoryDriver());
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
 	});
 
 	it("stores and retrieves a value", async () => {
@@ -19,9 +23,13 @@ describe("cache > MemoryDriver", () => {
 	});
 
 	it("respects TTL", async () => {
+		// The clock is the test's: expiry is decided by Date.now(), and a real
+		// sleep raced it.
+		vi.useFakeTimers();
 		await cache.set("expiring", "x", 0.05); // 50 ms
+		vi.advanceTimersByTime(50);
 		expect(await cache.get("expiring")).toBe("x");
-		await new Promise((r) => setTimeout(r, 80));
+		vi.advanceTimersByTime(1);
 		expect(await cache.get("expiring")).toBeUndefined();
 	});
 
@@ -107,9 +115,10 @@ describe("cache > MemoryDriver", () => {
 	// refs in #tagIndex; a later set() reusing the key then got wrong-purged by
 	// flushTags on the dead tag.
 	it("TTL expiry scrubs the tag index (no wrong-purge after key reuse)", async () => {
+		vi.useFakeTimers();
 		const driver = new MemoryDriver();
 		await driver.setWithTags("k", 1, ["news"], 0.05); // 50ms TTL
-		await new Promise((r) => setTimeout(r, 80)); // let it expire
+		vi.advanceTimersByTime(51); // let it expire
 		expect(await driver.get("k")).toBeNull(); // lazy expiry must scrub the tag ref
 		await driver.set("k", 2); // reuse the key, untagged
 		await driver.flushTags(["news"]);

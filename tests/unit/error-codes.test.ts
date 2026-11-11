@@ -3,7 +3,7 @@
  * (bug 331): upstream's identifiers verbatim where upstream has one,
  * `E_ECHO_*` for the rest.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CacheDriver, CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import {
@@ -29,6 +29,7 @@ function memory(): MemoryDriver {
 }
 
 afterEach(() => {
+	vi.useRealTimers();
 	for (const driver of created.splice(0)) driver.destroy();
 });
 
@@ -58,14 +59,17 @@ function plain(): CacheDriver {
 
 describe("echo > upstream error codes", () => {
 	it("a hard timeout is E_FACTORY_HARD_TIMEOUT", async () => {
+		vi.useFakeTimers();
 		const cache = new CacheManager(memory());
-		const failure = await cache
+		const call = cache
 			.getOrSet({
 				key: "k",
 				factory: () => new Promise((resolve) => setTimeout(resolve, 200)),
 				hardTimeout: "10ms",
 			})
 			.catch((error: unknown) => error);
+		await vi.advanceTimersByTimeAsync(10);
+		const failure = await call;
 
 		expect(failure).toBeInstanceOf(TimeoutError);
 		expect(failure).toBeInstanceOf(EchoError);
