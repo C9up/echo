@@ -648,7 +648,10 @@ export class CacheManager {
 		return !(await this.has(key));
 	}
 
-	/** Read a key and delete it in one step (bento `pull`). Returns `null` on miss. */
+	/**
+	 * Read a key and delete it in one step (bento `pull`). Resolves to
+	 * `undefined` on a miss, as `get` does, and deletes nothing then.
+	 */
 	async pull<T = unknown>(key: string): Promise<T | undefined> {
 		await this.#whenConnected();
 		const value = await this.get<T>(key);
