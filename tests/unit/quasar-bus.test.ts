@@ -366,3 +366,89 @@ describe("echo > the quasar cache bus", () => {
 		);
 	});
 });
+
+/**
+ * Quasar retires a connection whose retry strategy gave up and hands out a
+ * fresh one. The bus kept the first: every publish failed with "Connection is
+ * closed.", and the subscription — which lived on the dead subscriber socket —
+ * was never made again, so peers stopped hearing each other's invalidations.
+ */
+describe("echo > the quasar cache bus after its connection ended", () => {
+	it("publishes on the fresh connection and carries its listener over", async () => {
+		const first = Object.assign(pubsub(), { status: "ready" });
+		const second = Object.assign(pubsub(), { status: "ready" });
+		const manager = {
+			connection: vi
+				.fn()
+				.mockReturnValueOnce(first)
+				.mockReturnValueOnce(second),
+		};
+		mockQuasar({ default: manager });
+		const bus = (await load())({ connection: "cache" });
+		const seen: BusMessage[] = [];
+		await bus.subscribe((m) => seen.push(m));
+		const wrapper = first.handlers.get("echo::invalidate");
+
+		first.status = "end";
+		await bus.publish(message);
+
+		expect(manager.connection).toHaveBeenCalledTimes(2);
+		expect(second.published).toEqual([
+			["echo::invalidate", JSON.stringify(message)],
+		]);
+		// Listening again on the new connection, with the same wrapper, and
+		// taken off the old one by name.
+		expect(second.handlers.get("echo::invalidate")).toBe(wrapper);
+		expect(first.removed).toEqual([["echo::invalidate", wrapper]]);
+		second.handlers.get("echo::invalidate")?.(JSON.stringify(message));
+		expect(seen).toEqual([message]);
+	});
+
+	it("tries the move again when the new connection refused it", async () => {
+		const first = Object.assign(pubsub(), { status: "ready" });
+		const refusing = Object.assign(pubsub(), { status: "ready" });
+		refusing.subscribe = vi.fn(
+			async (
+				_channel: string,
+				_handler: (raw: string) => void,
+				options?: {
+					onSubscription?: (count: number) => void;
+					onError?: (error: unknown) => void;
+				},
+			) => {
+				options?.onError?.(new Error("still down"));
+			},
+		);
+		const third = Object.assign(pubsub(), { status: "ready" });
+		const manager = {
+			connection: vi
+				.fn()
+				.mockReturnValueOnce(first)
+				.mockReturnValueOnce(refusing)
+				.mockReturnValueOnce(third),
+		};
+		mockQuasar({ default: manager });
+		const bus = (await load())();
+		await bus.subscribe(() => {});
+
+		first.status = "end";
+		await expect(bus.publish(message)).rejects.toThrow("still down");
+		await bus.publish(message);
+
+		expect(third.handlers.has("echo::invalidate")).toBe(true);
+		expect(third.published).toHaveLength(1);
+	});
+
+	it("keeps a connection that closed but reconnects by itself", async () => {
+		const socket = Object.assign(pubsub(), { status: "ready" });
+		const manager = { connection: vi.fn(() => socket) };
+		mockQuasar({ default: manager });
+		const bus = (await load())();
+
+		await bus.publish(message);
+		socket.status = "close";
+		await bus.publish(message);
+
+		expect(manager.connection).toHaveBeenCalledOnce();
+	});
+});

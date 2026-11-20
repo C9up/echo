@@ -20,6 +20,7 @@ import {
 import { EchoError } from "./errors.js";
 import {
 	hasCommands,
+	hasEnded,
 	quasarConnection as loadQuasarConnection,
 } from "./vendor/quasarConnection.js";
 
@@ -177,7 +178,76 @@ export function quasarBus(options?: {
 		Promise<(raw: string) => void>
 	>();
 
+	/** What `ready` settled to, so its state can be read. */
+	let current: PubSubSource | undefined;
+	/**
+	 * Subscriptions to carry over from a source that ended, taken when the end
+	 * was noticed. A snapshot, not `opened` itself: a subscribe made after that
+	 * moment waits on the new source, and waiting on it from here would be
+	 * waiting on ourselves.
+	 */
+	let moving:
+		| { from: PubSubSource; pending: Array<Promise<(raw: string) => void>> }
+		| undefined;
+
+	/**
+	 * Listen on `source`, waited on through the callbacks, not on the call's
+	 * return value: `subscribe` reports a failure rather than rejecting, and
+	 * newer quasar declares it `void`. This shape is correct against both.
+	 */
+	const listen = (
+		source: PubSubSource,
+		wrapper: (raw: string) => void,
+	): Promise<void> =>
+		new Promise<void>((resolve, reject) => {
+			source.subscribe(channel, wrapper, {
+				onSubscription: () => resolve(),
+				onError: (error) =>
+					reject(error instanceof Error ? error : new Error(String(error))),
+			});
+		});
+
+	/**
+	 * Carry every listener over to the connection that replaced an ended one.
+	 * The subscriptions lived on the dead subscriber socket — quasar drops
+	 * them on its `end` — so without this the instance kept publishing on the
+	 * new connection and never heard its peers again: every one served its
+	 * stale L1 until the TTL ran out.
+	 */
+	const move = async (
+		from: PubSubSource,
+		to: PubSubSource,
+		pending: Array<Promise<(raw: string) => void>>,
+	): Promise<void> => {
+		for (const opening of pending) {
+			let wrapper: (raw: string) => void;
+			try {
+				wrapper = await opening;
+			} catch {
+				// Never subscribed: its own caller already saw the rejection.
+				continue;
+			}
+			await listen(to, wrapper);
+			try {
+				// Named, as everywhere else: the old connection may be shared.
+				await from.unsubscribe?.(channel, wrapper);
+			} catch {
+				// The ended socket refuses; nothing listens on it any more anyway.
+			}
+		}
+	};
+
 	const manager = (): Promise<PubSubSource> => {
+		// Re-resolved once the source has ended for good: quasar retires a
+		// connection whose retry strategy gave up and hands out a fresh one,
+		// and keeping the dead one failed every publish with "Connection is
+		// closed." until restart. NAMED DEVIATION, better than upstream, whose
+		// bus keeps the client it was built with.
+		if (current !== undefined && hasEnded(current)) {
+			moving ??= { from: current, pending: [...opened.values()] };
+			current = undefined;
+			ready = undefined;
+		}
 		ready ??= loadQuasar(
 			`the cache bus asks for the "${options?.connection ?? "default"}" quasar connection`,
 		)
@@ -191,6 +261,16 @@ export function quasarBus(options?: {
 						"Echo: the quasar connection does not expose publish()/subscribe()",
 					);
 				}
+				return source;
+			})
+			.then(async (source) => {
+				// A move that fails leaves `moving` set, so the next call — which
+				// resolves again, since this one rejects — tries it again.
+				if (moving !== undefined && moving.from !== source) {
+					await move(moving.from, source, moving.pending);
+				}
+				moving = undefined;
+				current = source;
 				return source;
 			})
 			// Forgotten on failure, as the Redis driver forgets its client:
@@ -234,18 +314,7 @@ export function quasarBus(options?: {
 			// quietly incoherent.
 			const attempt = (async (): Promise<(raw: string) => void> => {
 				const source = await manager();
-				// Waited on through the callbacks, not on the call's return value:
-				// `subscribe` reports a failure rather than rejecting, and newer
-				// quasar declares it `void`. This shape is correct against both.
-				await new Promise<void>((resolve, reject) => {
-					source.subscribe(channel, wrapper, {
-						onSubscription: () => resolve(),
-						onError: (error) => {
-							opened.delete(handler);
-							reject(error instanceof Error ? error : new Error(String(error)));
-						},
-					});
-				});
+				await listen(source, wrapper);
 				return wrapper;
 			})();
 			opened.set(handler, attempt);

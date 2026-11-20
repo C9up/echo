@@ -5,7 +5,10 @@
  * new error to explain why the process never recovered.
  */
 import { describe, expect, it, vi } from "vitest";
-import { RedisDriver } from "../../src/drivers/RedisDriver.js";
+import {
+	type RedisClient,
+	RedisDriver,
+} from "../../src/drivers/RedisDriver.js";
 
 const fakeClient = () =>
 	({
@@ -38,5 +41,63 @@ describe("echo > redis client resolution", () => {
 		const driver = new RedisDriver(resolver);
 		await Promise.all([driver.get("a"), driver.get("b"), driver.get("c")]);
 		expect(resolver).toHaveBeenCalledTimes(1);
+	});
+});
+
+/**
+ * Quasar retires a connection whose retry strategy gave up (about three
+ * seconds of outage with the generated config) and hands out a fresh one. A
+ * driver that kept the first one turned a Redis blip into a permanent cache
+ * outage: "Connection is closed." on every call until restart.
+ */
+describe("echo > a Redis connection that ended for good", () => {
+	function liveClient(status: string) {
+		return {
+			status,
+			get: vi.fn(async (): Promise<string | null> => null),
+			set: vi.fn(async (): Promise<unknown> => "OK"),
+			del: vi.fn(async () => 1),
+			exists: vi.fn(async () => 0),
+			keys: vi.fn(async (): Promise<string[]> => []),
+			sadd: vi.fn(async () => 1),
+			srem: vi.fn(async () => 1),
+			smembers: vi.fn(async (): Promise<string[]> => []),
+			expire: vi.fn(async () => 1),
+			persist: vi.fn(async () => 1),
+			ttl: vi.fn(async () => -1),
+		};
+	}
+
+	it("is resolved again on the next call", async () => {
+		const first = liveClient("ready");
+		const second = liveClient("ready");
+		const resolver = vi
+			.fn<() => RedisClient>()
+			.mockReturnValueOnce(first)
+			.mockReturnValueOnce(second);
+		const driver = new RedisDriver(resolver);
+
+		await driver.get("k");
+		first.status = "end";
+		await driver.get("k");
+		await driver.get("k");
+
+		expect(resolver).toHaveBeenCalledTimes(2);
+		expect(first.get).toHaveBeenCalledOnce();
+		expect(second.get).toHaveBeenCalledTimes(2);
+	});
+
+	it("keeps a client that closed but reconnects, and one handed in directly", async () => {
+		const resolved = liveClient("ready");
+		const resolver = vi.fn(() => resolved);
+		const driver = new RedisDriver(resolver);
+		await driver.get("k");
+		resolved.status = "close";
+		await driver.get("k");
+		expect(resolver).toHaveBeenCalledOnce();
+
+		const direct = liveClient("end");
+		await new RedisDriver(direct).get("k");
+		expect(direct.get).toHaveBeenCalledOnce();
 	});
 });

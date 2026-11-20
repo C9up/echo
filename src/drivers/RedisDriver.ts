@@ -17,6 +17,7 @@ import { claimed } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
 import { EchoError } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
+import { hasEnded } from "../vendor/quasarConnection.js";
 
 /**
  * Minimal Redis client interface, in ioredis' shape — a raw ioredis client
@@ -109,8 +110,18 @@ export class RedisDriver implements TaggableDriver {
 	/**
 	 * The client, resolved once. Two commands racing on a cold store must not
 	 * each open their own connection, so the in-flight promise is shared.
+	 *
+	 * Resolved AGAIN once the client it holds has ended for good: quasar
+	 * retires a connection whose retry strategy gave up and hands out a fresh
+	 * one, and keeping the dead client made a three-second Redis blip a
+	 * permanent cache outage. NAMED DEVIATION, better than upstream, whose
+	 * Redis driver captures `ioConnection` once. A client handed in directly is
+	 * kept whatever its state.
 	 */
 	async #client(): Promise<RedisClient> {
+		if (typeof this.#source === "function" && hasEnded(this.#resolved)) {
+			this.#resolved = undefined;
+		}
 		if (this.#resolved) return this.#resolved;
 		if (typeof this.#source !== "function") {
 			this.#resolved = this.#source;
