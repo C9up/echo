@@ -89,7 +89,10 @@ describe("echo > cache events", () => {
 		const payloads: Array<{ key: string; store: string }> = [];
 		c.on("cache:miss", (p) => payloads.push(p));
 		await c.get({ key: "absent" });
-		expect(payloads).toEqual([{ key: "absent", store: "redis" }]);
+		// Upstream's fields, and the time the call took, which upstream lacks.
+		expect(payloads).toEqual([
+			{ key: "absent", store: "redis", duration: expect.any(Number) },
+		]);
 	});
 
 	it("once fires a single time", async () => {

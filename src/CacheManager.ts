@@ -83,6 +83,15 @@ function resolveMs(duration: Duration | undefined): number | undefined {
 	return Math.min(seconds * 1000, MAX_TIMER_MS);
 }
 
+/**
+ * A resolved TTL as a write event reports it: `null` for an entry that never
+ * expires, which the driver level spells `0`, so a listener does not read
+ * "lives zero seconds".
+ */
+function reportedTtl(seconds: number): number | null {
+	return seconds === 0 ? null : seconds;
+}
+
 /** The default `graceBackoff`, as upstream's: 10 seconds. */
 const DEFAULT_GRACE_BACKOFF_SECONDS = 10;
 
@@ -178,6 +187,8 @@ interface NormalizedGetOrSet<T> {
 	lockTimeoutMs: number | undefined;
 	tags: string[];
 	onFactoryError?: (error: FactoryError) => void;
+	/** `performance.now()` when the call came in: what its events time from. */
+	started: number;
 }
 
 /** The slice of `CacheStoreManager` a store it built needs to reach back into. */
@@ -258,6 +269,11 @@ export class CacheManager {
 	 */
 	#prefixTags(tags: string[]): string[] {
 		return tags.map((tag) => this.#prefixKey(tag));
+	}
+
+	/** Milliseconds since `started`, to two decimals: an event's `duration`. */
+	#since(started: number): number {
+		return Math.round((performance.now() - started) * 100) / 100;
 	}
 
 	#emit<E extends keyof CacheEventMap>(
@@ -520,6 +536,7 @@ export class CacheManager {
 	async get<T = unknown>(
 		keyOrOptions: string | GetOptions<T>,
 	): Promise<T | undefined> {
+		const started = performance.now();
 		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
@@ -537,6 +554,7 @@ export class CacheManager {
 				value: entry.value,
 				store: this.#name,
 				graced: false,
+				duration: this.#since(started),
 			});
 			return entry.value;
 		}
@@ -546,11 +564,16 @@ export class CacheManager {
 				value: entry.value,
 				store: this.#name,
 				graced: true,
+				duration: this.#since(started),
 			});
 			return entry.value;
 		}
 
-		this.#emit("cache:miss", { key, store: this.#name });
+		this.#emit("cache:miss", {
+			key,
+			store: this.#name,
+			duration: this.#since(started),
+		});
 		if (defaultValue !== undefined) {
 			return defaultValue instanceof Function ? defaultValue() : defaultValue;
 		}
@@ -571,6 +594,7 @@ export class CacheManager {
 		value?: unknown,
 		ttlSeconds?: number,
 	): Promise<void> {
+		const started = performance.now();
 		await this.#whenConnected();
 		let key: string;
 		let val: unknown;
@@ -594,7 +618,13 @@ export class CacheManager {
 			tags = keyOrOptions.tags ?? [];
 		}
 		await this.#writeValue(this.#prefixKey(key), val, ttl, graceSeconds, tags);
-		this.#emit("cache:written", { key, value: val, store: this.#name });
+		this.#emit("cache:written", {
+			key,
+			value: val,
+			store: this.#name,
+			ttl: reportedTtl(ttl),
+			duration: this.#since(started),
+		});
 	}
 
 	/** Set a value that never expires (bento `setForever`). */
@@ -607,11 +637,16 @@ export class CacheManager {
 	delete(key: string): Promise<boolean>;
 	delete(options: DeleteOptions): Promise<boolean>;
 	async delete(keyOrOptions: string | DeleteOptions): Promise<boolean> {
+		const started = performance.now();
 		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
 		const deleted = await this.#driver.delete(this.#prefixKey(key));
-		this.#emit("cache:deleted", { key, store: this.#name });
+		this.#emit("cache:deleted", {
+			key,
+			store: this.#name,
+			duration: this.#since(started),
+		});
 		return deleted;
 	}
 
@@ -625,8 +660,13 @@ export class CacheManager {
 			: keysOrOptions.keys;
 		let all = true;
 		for (const key of keys) {
+			const started = performance.now();
 			const ok = await this.#driver.delete(this.#prefixKey(key));
-			this.#emit("cache:deleted", { key, store: this.#name });
+			this.#emit("cache:deleted", {
+				key,
+				store: this.#name,
+				duration: this.#since(started),
+			});
 			if (!ok) all = false;
 		}
 		return all;
@@ -664,6 +704,7 @@ export class CacheManager {
 	 * window (bento `expire`). Without grace this is equivalent to a delete.
 	 */
 	async expire(keyOrOptions: string | ExpireOptions): Promise<boolean> {
+		const started = performance.now();
 		await this.#whenConnected();
 		const key =
 			typeof keyOrOptions === "string" ? keyOrOptions : keyOrOptions.key;
@@ -690,7 +731,13 @@ export class CacheManager {
 		} else {
 			expired = await this.#driver.delete(prefixed);
 		}
-		if (expired) this.#emit("cache:expire", { key, store: this.#name });
+		if (expired) {
+			this.#emit("cache:expire", {
+				key,
+				store: this.#name,
+				duration: this.#since(started),
+			});
+		}
 		return expired;
 	}
 
@@ -703,11 +750,15 @@ export class CacheManager {
 	 * handing the driver the prefix.
 	 */
 	async clear(): Promise<void> {
+		const started = performance.now();
 		await this.#whenConnected();
 		// The separator is part of it: `tenant-a` must not take `tenant-abc`
 		// with it, and every key under this view is written `<prefix>:<key>`.
 		await this.#driver.flush(this.#prefix ? `${this.#prefix}:` : undefined);
-		this.#emit("cache:cleared", { store: this.#name });
+		this.#emit("cache:cleared", {
+			store: this.#name,
+			duration: this.#since(started),
+		});
 	}
 
 	// ---- tags ------------------------------------------------------------
@@ -719,15 +770,17 @@ export class CacheManager {
 		tags: string[],
 		ttlSeconds?: number,
 	): Promise<void> {
+		const started = performance.now();
 		await this.#whenConnected();
-		await this.#writeValue(
-			this.#prefixKey(key),
+		const ttl = resolveTtlSeconds(ttlSeconds, this.#defaultTtl);
+		await this.#writeValue(this.#prefixKey(key), value, ttl, 0, tags);
+		this.#emit("cache:written", {
+			key,
 			value,
-			resolveTtlSeconds(ttlSeconds, this.#defaultTtl),
-			0,
-			tags,
-		);
-		this.#emit("cache:written", { key, value, store: this.#name });
+			store: this.#name,
+			ttl: reportedTtl(ttl),
+			duration: this.#since(started),
+		});
 	}
 
 	/** Invalidate all entries carrying any of the given tags (bento `deleteByTag`). */
@@ -786,6 +839,7 @@ export class CacheManager {
 		a: string | GetOrSetOptions<T>,
 		b: number | undefined,
 		c: Factory<T> | undefined,
+		started: number,
 	): NormalizedGetOrSet<T> {
 		if (typeof a === "string") {
 			if (typeof c !== "function") {
@@ -803,6 +857,7 @@ export class CacheManager {
 				hardTimeoutMs: resolveMs(this.#defaultHardTimeout),
 				lockTimeoutMs: resolveMs(this.#defaultLockTimeout),
 				tags: [],
+				started,
 			};
 		}
 		// Checked in this form too: a config value or a JSON body reaching here
@@ -828,6 +883,7 @@ export class CacheManager {
 			lockTimeoutMs: resolveMs(a.lockTimeout ?? this.#defaultLockTimeout),
 			tags: a.tags ?? [],
 			onFactoryError: a.onFactoryError,
+			started,
 		};
 	}
 
@@ -853,6 +909,11 @@ export class CacheManager {
 				// stayed in the map for good, and every later call for the key
 				// joined it instead of running the factory again.
 				const value = await Promise.resolve().then(() => o.factory());
+				// The write is timed on its own: the factory's time is the
+				// miss's, reported once the call is served. Timed from the call,
+				// the two overlapped and a profiler summing them counted the
+				// factory twice.
+				const writing = performance.now();
 				await this.#writeValue(
 					prefixed,
 					value,
@@ -864,6 +925,8 @@ export class CacheManager {
 					key: o.key,
 					value,
 					store: this.#name,
+					ttl: reportedTtl(o.ttlSeconds),
+					duration: this.#since(writing),
 				});
 				return { value, fresh: true };
 			} catch (error) {
@@ -936,16 +999,25 @@ export class CacheManager {
 	 * the factory has run; a graced hit when the factory failed and the stale
 	 * value stood in for it. A joiner ran no factory and reports neither.
 	 */
-	#settled<T>(key: string, outcome: FactoryOutcome<T>, leader: boolean): T {
+	#settled<T>(
+		o: NormalizedGetOrSet<T>,
+		outcome: FactoryOutcome<T>,
+		leader: boolean,
+	): T {
 		if (!leader) return outcome.value;
 		if (outcome.fresh) {
-			this.#emit("cache:miss", { key, store: this.#name });
+			this.#emit("cache:miss", {
+				key: o.key,
+				store: this.#name,
+				duration: this.#since(o.started),
+			});
 		} else {
 			this.#emit("cache:hit", {
-				key,
+				key: o.key,
 				value: outcome.value,
 				store: this.#name,
 				graced: true,
+				duration: this.#since(o.started),
 			});
 		}
 		return outcome.value;
@@ -958,8 +1030,9 @@ export class CacheManager {
 		b?: number,
 		c?: Factory<T>,
 	): Promise<T> {
+		const started = performance.now();
 		await this.#whenConnected();
-		const o = this.#normalizeGetOrSet<T>(a, b, c);
+		const o = this.#normalizeGetOrSet<T>(a, b, c, started);
 		const prefixed = this.#prefixKey(o.key);
 
 		const entry = await this.#readEntry<T>(prefixed);
@@ -969,6 +1042,7 @@ export class CacheManager {
 				value: entry.value,
 				store: this.#name,
 				graced: false,
+				duration: this.#since(started),
 			});
 			return entry.value;
 		}
@@ -1013,10 +1087,11 @@ export class CacheManager {
 					value: staleValue,
 					store: this.#name,
 					graced: true,
+					duration: this.#since(started),
 				});
 				return staleValue;
 			}
-			return this.#settled(o.key, result, !joined);
+			return this.#settled(o, result, !joined);
 		}
 
 		// A joiner waits at most `lockTimeout` for the leader, stale value or
@@ -1029,17 +1104,17 @@ export class CacheManager {
 		if (lockMs !== undefined && (hardMs === undefined || lockMs < hardMs)) {
 			const result = await withTimeout(factoryPromise, lockMs);
 			if (result === TIMEOUT) throw new LockTimeoutError(o.key, lockMs);
-			return this.#settled(o.key, result, !joined);
+			return this.#settled(o, result, !joined);
 		}
 		if (hardMs !== undefined) {
 			const result = await withTimeout(factoryPromise, hardMs);
 			if (result === TIMEOUT) {
 				throw new TimeoutError(o.key, hardMs);
 			}
-			return this.#settled(o.key, result, !joined);
+			return this.#settled(o, result, !joined);
 		}
 
-		return this.#settled(o.key, await factoryPromise, !joined);
+		return this.#settled(o, await factoryPromise, !joined);
 	}
 
 	/** Like {@link getOrSet} but the stored value never expires (bento `getOrSetForever`). */

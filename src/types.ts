@@ -186,20 +186,40 @@ export interface ExpireOptions {
 	key: string;
 }
 
-/** Payloads for each emitted cache event (bento event-name parity). */
+/**
+ * Payloads for each emitted cache event (bento event-name parity).
+ *
+ * Upstream's fields, plus two of our own that a profiler needs and upstream's
+ * payloads do not carry: `duration`, the milliseconds from the call to the
+ * event, and on a write its `ttl`, as Laravel's `KeyWritten` reports it.
+ * Additive: a listener written against upstream's shape reads what it read.
+ */
 export interface CacheEventMap {
 	"cache:hit": {
 		key: string;
 		value: unknown;
 		store: string;
 		graced: boolean;
+		duration: number;
 	};
-	"cache:miss": { key: string; store: string };
-	"cache:written": { key: string; value: unknown; store: string };
-	"cache:deleted": { key: string; store: string };
-	"cache:cleared": { store: string };
+	/**
+	 * Reported once the call is served. For `getOrSet` that is after its
+	 * factory ran, as upstream reports it, so `duration` includes the factory.
+	 */
+	"cache:miss": { key: string; store: string; duration: number };
+	"cache:written": {
+		key: string;
+		value: unknown;
+		store: string;
+		/** Seconds the entry lives, `null` when it never expires. */
+		ttl: number | null;
+		/** The write alone: a `getOrSet`'s factory is counted in its miss. */
+		duration: number;
+	};
+	"cache:deleted": { key: string; store: string; duration: number };
+	"cache:cleared": { store: string; duration: number };
 	/** A key marked stale by `expire()`, kept for its grace window or dropped. */
-	"cache:expire": { key: string; store: string };
+	"cache:expire": { key: string; store: string; duration: number };
 }
 
 /**

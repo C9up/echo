@@ -231,7 +231,9 @@ describe("echo > expiring without deleting", () => {
 		await cache.expire("k");
 		await cache.expire("missing");
 
-		expect(seen).toEqual([{ key: "k", store: "main" }]);
+		expect(seen).toEqual([
+			{ key: "k", store: "main", duration: expect.any(Number) },
+		]);
 	});
 });
 
