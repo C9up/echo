@@ -8,7 +8,8 @@
  * rate), that tag invalidation reaches every key across real SET operations,
  * and that `flush` actually walks a live SCAN cursor.
  *
- * Gated on `REDIS_TEST_URL`; skipped when no server answers.
+ * Gated on `REDIS_TEST_URL`; skipped only locally without one;
+ * failed when it is set and nothing answers, or missing on CI.
  */
 import { QuasarManager } from "@c9up/quasar";
 import { clearQuasar, setQuasar } from "@c9up/quasar/services/main";
@@ -19,8 +20,8 @@ import { quasarConnection } from "../../src/quasar.js";
 const url = process.env.REDIS_TEST_URL ?? "";
 
 /**
- * Skipped, not failed, when no server answers: a URL can be set and point at
- * nothing. Probed through quasar (a devDependency here) rather than ioredis,
+ * Whether the server answers: a URL can be set and point at nothing, which
+ * fails the file below rather than skipping it. Probed through quasar (a devDependency here) rather than ioredis,
  * which echo deliberately does not depend on.
  */
 async function serverAnswers(): Promise<boolean> {
@@ -42,6 +43,15 @@ async function serverAnswers(): Promise<boolean> {
 }
 
 const live = url ? await serverAnswers() : false;
+// Set means meant, and CI always sets it: a URL that answers nothing, or no
+// URL at all on CI, fails the file instead of quietly skipping the suite.
+if ((url !== "" || process.env.CI === "true") && !live) {
+	throw new Error(
+		url === ""
+			? "REDIS_TEST_URL is not set on CI: refusing to skip the live-Redis suite."
+			: `REDIS_TEST_URL is set (${url}) but no server answers: refusing to skip the live-Redis suite.`,
+	);
+}
 const describeRedis = live ? describe : describe.skip;
 
 describeRedis("echo RedisDriver against a live Redis", () => {

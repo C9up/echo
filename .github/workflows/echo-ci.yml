@@ -35,7 +35,7 @@ jobs:
     # developer's machine, which is where the atomicity they check would fail.
     services:
       redis:
-        image: redis:7
+        image: redis:7@sha256:2e3eb11462c4e3759e6972678dd051d150ff54b1e60714b3c33b701260172a90
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -61,7 +61,29 @@ jobs:
       - run: pnpm build
       # With coverage: the thresholds in vitest.config.ts are only a gate
       # if something runs them.
-      - run: pnpm test:coverage
+      - run: pnpm test:coverage --reporter=default --reporter=json --outputFile=test-results.json
+      # The live-service suites throw on CI when their service is missing, and
+      # this gate also refuses a run where nothing ran or anything did not run
+      # (skipped, todo, pending): a quietly skipped suite tests nothing.
+      - name: Gate — tests ran AND none skipped
+        if: always()
+        run: |
+          if [ ! -f test-results.json ]; then
+            echo "::error::test-results.json not produced — vitest failed before writing"
+            exit 1
+          fi
+          total=$(jq '[.testResults[].assertionResults[]] | length' test-results.json)
+          if [ "$total" -eq 0 ]; then
+            echo "::error::0 tests ran — test discovery is broken"
+            exit 1
+          fi
+          skipped=$(jq '[.testResults[].assertionResults[] | select(.status != "passed" and .status != "failed")] | length' test-results.json)
+          if [ "$skipped" -ne 0 ]; then
+            echo "::error::$skipped tests did not run — a service or its URL is missing"
+            jq -r '.testResults[] | .name as $f | .assertionResults[] | select(.status != "passed" and .status != "failed") | "\($f): \(.fullName)"' test-results.json
+            exit 1
+          fi
+        shell: bash
 
   npm-audit:
     name: Advisories (npm, production tree)
