@@ -17,7 +17,11 @@ import {
 	type CacheBus,
 	isBusMessage,
 } from "./drivers/TieredDriver.js";
-import { EchoError } from "./errors.js";
+import {
+	E_ECHO_BUS_SUBSCRIBE_FAILED,
+	E_ECHO_INCOMPLETE_CONNECTION,
+	E_ECHO_QUASAR_MISSING,
+} from "./errors.js";
 import {
 	hasCommands,
 	hasEnded,
@@ -73,13 +77,9 @@ export function quasarConnection(name?: string): () => Promise<RedisClient> {
 			isConnection: isRedisClient,
 			what: "the cache store",
 			raise: (reason, message, cause) =>
-				new EchoError(
-					reason === "quasar-missing"
-						? "E_ECHO_QUASAR_MISSING"
-						: "E_ECHO_INCOMPLETE_CONNECTION",
-					message,
-					{ cause },
-				),
+				reason === "quasar-missing"
+					? new E_ECHO_QUASAR_MISSING([message], { cause })
+					: new E_ECHO_INCOMPLETE_CONNECTION([message], { cause }),
 		});
 }
 
@@ -146,9 +146,10 @@ async function loadQuasar(context: string): Promise<unknown> {
 			? loaded
 			: Reflect.get(Object(loaded), "default");
 	} catch (cause) {
-		throw new EchoError(
-			"E_ECHO_QUASAR_MISSING",
-			`Echo: ${context}, but @c9up/quasar is not installed.\n  pnpm add @c9up/quasar`,
+		throw new E_ECHO_QUASAR_MISSING(
+			[
+				`Echo: ${context}, but @c9up/quasar is not installed.\n  pnpm add @c9up/quasar`,
+			],
 			{ cause },
 		);
 	}
@@ -203,7 +204,13 @@ export function quasarBus(options?: {
 			source.subscribe(channel, wrapper, {
 				onSubscription: () => resolve(),
 				onError: (error) =>
-					reject(error instanceof Error ? error : new Error(String(error))),
+					reject(
+						error instanceof Error
+							? error
+							: new E_ECHO_BUS_SUBSCRIBE_FAILED([String(error)], {
+									cause: error,
+								}),
+					),
 			});
 		});
 
@@ -256,10 +263,9 @@ export function quasarBus(options?: {
 					? loaded.connection(options?.connection)
 					: loaded;
 				if (!isPubSubSource(source)) {
-					throw new EchoError(
-						"E_ECHO_INCOMPLETE_CONNECTION",
+					throw new E_ECHO_INCOMPLETE_CONNECTION([
 						"Echo: the quasar connection does not expose publish()/subscribe()",
-					);
+					]);
 				}
 				return source;
 			})

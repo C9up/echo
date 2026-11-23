@@ -7,7 +7,11 @@
 import { parseBytes } from "../bytes.js";
 import { claimed, hasUnref } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
-import { EchoError, UndefinedValueError } from "../errors.js";
+import {
+	E_ECHO_INVALID_CONFIG,
+	E_ECHO_UNSERIALIZABLE_VALUE,
+	E_UNDEFINED_VALUE,
+} from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 
 export interface MemoryDriverOptions {
@@ -57,10 +61,7 @@ interface StoredEntry {
 function toJson(value: unknown): string {
 	const json = JSON.stringify(value);
 	if (json === undefined) {
-		throw new EchoError(
-			"E_ECHO_UNSERIALIZABLE_VALUE",
-			"Echo: the memory driver stores values as JSON, and this one has no JSON form — pass `serialize: false` to keep it as is",
-		);
+		throw new E_ECHO_UNSERIALIZABLE_VALUE();
 	}
 	return json;
 }
@@ -106,10 +107,9 @@ export class MemoryDriver implements TaggableDriver {
 				: options;
 		const ceiling = config.maxItems ?? 1000;
 		if (Number.isNaN(ceiling) || ceiling < 0) {
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
+			throw new E_ECHO_INVALID_CONFIG([
 				`Echo: maxItems must be a count, 0 or Infinity for no ceiling — got ${String(ceiling)}`,
-			);
+			]);
 		}
 		this.#maxItems = Number.isFinite(ceiling) ? ceiling : 0;
 		this.#serialize = config.serialize ?? true;
@@ -119,10 +119,9 @@ export class MemoryDriver implements TaggableDriver {
 		) {
 			// What it would measure is the JSON, and a driver keeping
 			// references has none. Upstream refuses the same combination.
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
+			throw new E_ECHO_INVALID_CONFIG([
 				"Echo: maxSize and maxEntrySize measure the stored JSON, so they need `serialize` — drop `serialize: false` or the byte bound",
-			);
+			]);
 		}
 		this.#maxSize =
 			config.maxSize === undefined ? 0 : parseBytes(config.maxSize, "maxSize");
@@ -273,7 +272,7 @@ export class MemoryDriver implements TaggableDriver {
 		expiresAtOverride?: number,
 	): void {
 		if (value === null || value === undefined) {
-			throw new UndefinedValueError();
+			throw new E_UNDEFINED_VALUE(key);
 		}
 		// Before anything is touched: a value JSON cannot carry must leave the
 		// previous entry and its tags exactly as they were.

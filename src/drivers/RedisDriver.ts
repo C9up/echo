@@ -15,7 +15,7 @@
 
 import { claimed } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
-import { EchoError } from "../errors.js";
+import { E_ECHO_SCAN_UNSUPPORTED } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 import { hasEnded } from "../vendor/quasarConnection.js";
 
@@ -352,10 +352,7 @@ export class RedisDriver implements TaggableDriver {
 	): Promise<void> {
 		const client = await this.#client();
 		if (typeof client.scan !== "function") {
-			throw new EchoError(
-				"E_ECHO_SCAN_UNSUPPORTED",
-				"Echo: RedisDriver.flush() requires a client with scan() support. KEYS is not safe for production use.",
-			);
+			throw new E_ECHO_SCAN_UNSUPPORTED();
 		}
 		const pattern = `${escapeGlob(literal)}*`;
 		let cursor = "0";

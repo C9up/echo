@@ -177,6 +177,32 @@ describe("echo > the quasar cache bus", () => {
 		);
 	});
 
+	it("gives a code to a subscribe failure reported as a bare value", async () => {
+		// A failure reported as a string or a reply object has no code of its
+		// own; the bus names it so a caller can tell it from a publish failure.
+		const socket = pubsub();
+		socket.subscribe = vi.fn(
+			async (
+				_channel: string,
+				_handler: (raw: string) => void,
+				options?: {
+					onSubscription?: (count: number) => void;
+					onError?: (error: unknown) => void;
+				},
+			) => {
+				options?.onError?.("NOPERM no permission on the channel");
+			},
+		);
+		mockQuasar({ default: { connection: () => socket } });
+
+		const bus = (await load())();
+
+		await expect(bus.subscribe(() => {})).rejects.toMatchObject({
+			code: "E_ECHO_BUS_SUBSCRIBE_FAILED",
+			cause: "NOPERM no permission on the channel",
+		});
+	});
+
 	it("lets a retry through after a failed subscribe", async () => {
 		let attempts = 0;
 		const socket = pubsub();

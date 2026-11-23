@@ -8,7 +8,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { parseDuration, resolveTtlSeconds } from "../../src/duration.js";
-import { FactoryError } from "../../src/errors.js";
+import { E_FACTORY_ERROR } from "../../src/errors.js";
 
 describe("echo > parsing a duration", () => {
 	it("reads each unit, under every spelling it accepts", () => {
@@ -98,24 +98,21 @@ describe("echo > resolving a TTL", () => {
 describe("echo > the factory error", () => {
 	it("names the key and carries the original failure", () => {
 		const cause = new Error("upstream down");
-		const error = new FactoryError("users:7", cause, false);
+		const error = new E_FACTORY_ERROR("users:7", cause, false);
 
-		expect(error.message).toBe(
-			'Echo: factory for "users:7" failed: upstream down',
-		);
-		expect(error.name).toBe("FactoryError");
+		expect(error.message).toBe("Factory has thrown an error");
+		expect(error.name).toBe("E_FACTORY_ERROR");
 		expect(error.key).toBe("users:7");
 		expect(error.cause).toBe(cause);
-		expect(error.isBackground).toBe(false);
+		expect(error.isBackgroundFactory).toBe(false);
 	});
 
-	it("reads a thrown non-error too", () => {
-		const error = new FactoryError("k", "just a string", true);
+	it("carries a thrown non-error too", () => {
+		const error = new E_FACTORY_ERROR("k", "just a string", true);
 
-		expect(error.message).toContain("just a string");
 		expect(error.cause).toBe("just a string");
 		// A background refresh failing is not the same event as a foreground
 		// miss failing, and the handler has to be able to tell them apart.
-		expect(error.isBackground).toBe(true);
+		expect(error.isBackgroundFactory).toBe(true);
 	});
 });

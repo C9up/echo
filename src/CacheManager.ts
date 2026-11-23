@@ -9,16 +9,18 @@
  * canonical one; the positional form is kept for back-compat.
  */
 
+import type { Exception } from "@c9up/flare";
 import { claimed, hasUnref } from "./claim.js";
 import { type Duration, parseDuration, resolveTtlSeconds } from "./duration.js";
 import {
-	EchoError,
-	FactoryError,
-	InvalidArgumentError,
-	InvalidDurationError,
-	LockTimeoutError,
-	TimeoutError,
-	UndefinedValueError,
+	E_ECHO_INVALID_ARGUMENT,
+	E_ECHO_INVALID_DURATION,
+	E_ECHO_LOCK_TIMEOUT,
+	E_ECHO_NOT_TAGGABLE,
+	E_ECHO_UNKNOWN_STORE,
+	E_FACTORY_ERROR,
+	E_FACTORY_HARD_TIMEOUT,
+	E_UNDEFINED_VALUE,
 } from "./errors.js";
 import type {
 	CacheEmitter,
@@ -51,11 +53,10 @@ function isTaggableDriver(driver: CacheDriver): driver is TaggableDriver {
 	);
 }
 
-function notTaggable(): EchoError {
-	return new EchoError(
-		"E_ECHO_NOT_TAGGABLE",
-		"Echo: the configured driver does not support tag-based invalidation",
-	);
+function notTaggable(): Exception {
+	return new E_ECHO_NOT_TAGGABLE([
+		"the configured driver does not support tag-based invalidation",
+	]);
 }
 
 /** The longest delay `setTimeout` honours; past it Node fires after 1 ms. */
@@ -76,9 +77,9 @@ function resolveMs(duration: Duration | undefined): number | undefined {
 		typeof duration === "number" ? duration : parseDuration(duration);
 	if (seconds === Number.POSITIVE_INFINITY) return undefined;
 	if (Number.isNaN(seconds) || seconds < 0) {
-		throw new InvalidDurationError(
-			`Echo: a timeout must be a non-negative duration, or null for none — got ${String(duration)}`,
-		);
+		throw new E_ECHO_INVALID_DURATION([
+			`a timeout must be a non-negative duration, or null for none — got ${String(duration)}`,
+		]);
 	}
 	return Math.min(seconds * 1000, MAX_TIMER_MS);
 }
@@ -102,9 +103,9 @@ const DEFAULT_GRACE_BACKOFF_SECONDS = 10;
 function resolveBackoffSeconds(duration: Duration | undefined): number {
 	const seconds = resolveTtlSeconds(duration, DEFAULT_GRACE_BACKOFF_SECONDS);
 	if (seconds < 0) {
-		throw new InvalidDurationError(
-			`Echo: graceBackoff must be a non-negative duration, or null for none — got ${String(duration)}`,
-		);
+		throw new E_ECHO_INVALID_DURATION([
+			`graceBackoff must be a non-negative duration, or null for none — got ${String(duration)}`,
+		]);
 	}
 	return seconds;
 }
@@ -186,7 +187,7 @@ interface NormalizedGetOrSet<T> {
 	hardTimeoutMs: number | undefined;
 	lockTimeoutMs: number | undefined;
 	tags: string[];
-	onFactoryError?: (error: FactoryError) => void;
+	onFactoryError?: (error: E_FACTORY_ERROR) => void;
 	/** `performance.now()` when the call came in: what its events time from. */
 	started: number;
 }
@@ -376,11 +377,10 @@ export class CacheManager {
 	use(name?: string): CacheManager {
 		if (this.#stores) return this.#stores.use(name);
 		if (name === undefined) return this;
-		throw new EchoError(
-			"E_ECHO_UNKNOWN_STORE",
-			`Echo: cannot use the "${name}" store — this cache is configured with a single store. ` +
+		throw new E_ECHO_UNKNOWN_STORE([
+			`cannot use the "${name}" store — this cache is configured with a single store. ` +
 				"Declare `{ default, stores }` in config/cache.ts to name several.",
-		);
+		]);
 	}
 
 	/** @internal Called by `CacheStoreManager` on the store it builds. */
@@ -478,17 +478,18 @@ export class CacheManager {
 	}
 
 	async #writeValue(
-		prefixed: string,
+		key: string,
 		value: unknown,
 		ttlSeconds: number,
 		graceSeconds: number,
 		tags: string[],
 	): Promise<void> {
 		if (value === null || value === undefined) {
-			// Named divergence (fail-loud): unlike bento (which no-ops), echo throws
-			// on caching null/undefined — a null cache write is almost always a bug.
-			throw new UndefinedValueError();
+			// Named divergence (fail-loud): upstream refuses `undefined` only;
+			// echo refuses `null` too — a null cache write is almost always a bug.
+			throw new E_UNDEFINED_VALUE(key);
 		}
+		const prefixed = this.#prefixKey(key);
 		if (ttlSeconds < 0) {
 			// A TTL in the past: the value has already expired. Kept only as
 			// a stale copy for its grace window, otherwise dropped — and the
@@ -617,7 +618,7 @@ export class CacheManager {
 			);
 			tags = keyOrOptions.tags ?? [];
 		}
-		await this.#writeValue(this.#prefixKey(key), val, ttl, graceSeconds, tags);
+		await this.#writeValue(key, val, ttl, graceSeconds, tags);
 		this.#emit("cache:written", {
 			key,
 			value: val,
@@ -773,7 +774,7 @@ export class CacheManager {
 		const started = performance.now();
 		await this.#whenConnected();
 		const ttl = resolveTtlSeconds(ttlSeconds, this.#defaultTtl);
-		await this.#writeValue(this.#prefixKey(key), value, ttl, 0, tags);
+		await this.#writeValue(key, value, ttl, 0, tags);
 		this.#emit("cache:written", {
 			key,
 			value,
@@ -843,9 +844,7 @@ export class CacheManager {
 	): NormalizedGetOrSet<T> {
 		if (typeof a === "string") {
 			if (typeof c !== "function") {
-				throw new InvalidArgumentError(
-					"Echo: getOrSet(key, ttl, factory) requires a factory function",
-				);
+				throw new E_ECHO_INVALID_ARGUMENT(["getOrSet(key, ttl, factory)"]);
 			}
 			return {
 				key: a,
@@ -864,9 +863,7 @@ export class CacheManager {
 		// untyped made the call fail with a bare TypeError from deep inside the
 		// single-flight bookkeeping, instead of a refusal naming the argument.
 		if (typeof a.factory !== "function") {
-			throw new InvalidArgumentError(
-				"Echo: getOrSet({ key, factory }) requires a factory function",
-			);
+			throw new E_ECHO_INVALID_ARGUMENT(["getOrSet({ key, factory })"]);
 		}
 		return {
 			key: a.key,
@@ -915,7 +912,7 @@ export class CacheManager {
 				// factory twice.
 				const writing = performance.now();
 				await this.#writeValue(
-					prefixed,
+					o.key,
 					value,
 					o.ttlSeconds,
 					o.graceSeconds,
@@ -930,7 +927,7 @@ export class CacheManager {
 				});
 				return { value, fresh: true };
 			} catch (error) {
-				o.onFactoryError?.(new FactoryError(o.key, error, hasStale));
+				o.onFactoryError?.(new E_FACTORY_ERROR(o.key, error, hasStale));
 				if (hasStale && staleValue !== undefined) {
 					await this.#applyGraceBackoff(prefixed, staleValue, staleTags, o);
 					return { value: staleValue, fresh: false };
@@ -1103,13 +1100,13 @@ export class CacheManager {
 		const hardMs = o.hardTimeoutMs;
 		if (lockMs !== undefined && (hardMs === undefined || lockMs < hardMs)) {
 			const result = await withTimeout(factoryPromise, lockMs);
-			if (result === TIMEOUT) throw new LockTimeoutError(o.key, lockMs);
+			if (result === TIMEOUT) throw new E_ECHO_LOCK_TIMEOUT(o.key, lockMs);
 			return this.#settled(o, result, !joined);
 		}
 		if (hardMs !== undefined) {
 			const result = await withTimeout(factoryPromise, hardMs);
 			if (result === TIMEOUT) {
-				throw new TimeoutError(o.key, hardMs);
+				throw new E_FACTORY_HARD_TIMEOUT(o.key);
 			}
 			return this.#settled(o, result, !joined);
 		}

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
 import { TieredDriver } from "../../src/drivers/TieredDriver.js";
-import { TimeoutError } from "../../src/index.js";
+import { errors } from "../../src/index.js";
 
 /**
  * Failure-path coverage for the parity surface (grace / timeout / stampede /
@@ -193,7 +193,7 @@ describe("echo failure paths > single-flight (stampede)", () => {
 });
 
 describe("echo failure paths > hard timeout", () => {
-	it("throws TimeoutError when the factory exceeds the hard timeout", async () => {
+	it("throws E_FACTORY_HARD_TIMEOUT when the factory exceeds the hard timeout", async () => {
 		vi.useFakeTimers();
 		try {
 			const cache = new CacheManager(new MemoryDriver());
@@ -206,7 +206,7 @@ describe("echo failure paths > hard timeout", () => {
 				})
 				.catch((error: unknown) => error);
 			await vi.advanceTimersByTimeAsync(50);
-			expect(await call).toBeInstanceOf(TimeoutError);
+			expect(await call).toBeInstanceOf(errors.E_FACTORY_HARD_TIMEOUT);
 		} finally {
 			vi.useRealTimers();
 		}

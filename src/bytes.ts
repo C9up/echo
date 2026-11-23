@@ -3,7 +3,7 @@
  * or a human string (`'10mb'`), in powers of 1024.
  */
 
-import { EchoError } from "./errors.js";
+import { E_ECHO_INVALID_CONFIG } from "./errors.js";
 
 const UNIT_BYTES: Record<string, number> = {
 	b: 1,
@@ -19,7 +19,7 @@ const BYTES_RE = /^\s*(\d+(?:\.\d+)?)\s*([a-z]+)?\s*$/i;
 /**
  * A size in bytes, from a number of bytes or a string like `'512kb'`.
  *
- * @throws {EchoError} `E_ECHO_INVALID_CONFIG` for anything that is not a
+ * @throws {E_ECHO_INVALID_CONFIG} `E_ECHO_INVALID_CONFIG` for anything that is not a
  *   finite, non-negative size: a bound that cannot be read would otherwise
  *   leave the store silently unbounded.
  */
@@ -31,8 +31,7 @@ export function parseBytes(value: number | string, option: string): number {
 		const factor = UNIT_BYTES[(match?.[2] ?? "b").toLowerCase()];
 		if (match && factor !== undefined) return Number(match[1]) * factor;
 	}
-	throw new EchoError(
-		"E_ECHO_INVALID_CONFIG",
+	throw new E_ECHO_INVALID_CONFIG([
 		`Echo: ${option} must be a number of bytes or a size like '10mb' — got ${String(value)}`,
-	);
+	]);
 }

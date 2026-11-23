@@ -11,8 +11,9 @@
  *   const cached = await cache.get<User>('user:42')
  */
 
+import type { Exception } from "@c9up/flare";
 import { CacheManager } from "../CacheManager.js";
-import { EchoError } from "../errors.js";
+import { E_ECHO_NOT_BOOTED } from "../errors.js";
 
 let instance: CacheManager | undefined;
 
@@ -48,12 +49,8 @@ const placeholder = new CacheManager({
 	has: unbooted,
 });
 
-function notBooted(): EchoError {
-	return new EchoError(
-		"E_ECHO_NOT_BOOTED",
-		"[echo] CacheManager singleton accessed before EchoProvider.boot() ran " +
-			"or `setCache(myCache)` was called. Wire one of them first.",
-	);
+function notBooted(): Exception {
+	return new E_ECHO_NOT_BOOTED();
 }
 
 const cache: CacheManager = new Proxy(placeholder, {

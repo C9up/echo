@@ -9,7 +9,7 @@
  */
 
 import { type Duration, resolveTtlSeconds } from "../duration.js";
-import { EchoError, L2CacheError } from "../errors.js";
+import { E_ECHO_NOT_TAGGABLE, E_L2_CACHE_ERROR } from "../errors.js";
 import type {
 	CacheDriver,
 	CacheEntry,
@@ -122,7 +122,7 @@ export interface TieredDriverOptions {
 	 * rather than failing the call (upstream `suppressL2Errors`). Default
 	 * `true`: there is an L1 to serve from, so a Redis outage costs hit rate,
 	 * not every request. `false` surfaces each failure as an
-	 * {@link L2CacheError}.
+	 * {@link E_L2_CACHE_ERROR}.
 	 *
 	 * Invalidations — `delete`, `flush`, `deleteByTag` — report a failed L2
 	 * either way: a removal that did not reach the shared tier leaves the
@@ -307,7 +307,7 @@ export class TieredDriver implements TaggableDriver {
 	/**
 	 * Run a read or write against L2, the way upstream's remote cache does:
 	 * skipped while the breaker is open, and on failure either answered by
-	 * `fallback` (suppressed) or raised as an {@link L2CacheError}.
+	 * `fallback` (suppressed) or raised as an {@link E_L2_CACHE_ERROR}.
 	 */
 	async #onL2<T>(
 		operation: string,
@@ -322,7 +322,7 @@ export class TieredDriver implements TaggableDriver {
 		} catch (error) {
 			this.#l2Failed(operation, error);
 			if (this.#suppressL2Errors) return { ok: false, value: fallback };
-			throw new L2CacheError(operation, error);
+			throw new E_L2_CACHE_ERROR(error, { operation });
 		}
 	}
 
@@ -354,7 +354,7 @@ export class TieredDriver implements TaggableDriver {
 			return { ok: true, value };
 		} catch (error) {
 			this.#l2Failed(operation, error);
-			return { ok: false, error: new L2CacheError(operation, error) };
+			return { ok: false, error: new E_L2_CACHE_ERROR(error, { operation }) };
 		}
 	}
 
@@ -491,10 +491,9 @@ export class TieredDriver implements TaggableDriver {
 		const l1 = this.#l1;
 		const l2 = this.#l2;
 		if (!isTaggable(l1) || !isTaggable(l2)) {
-			throw new EchoError(
-				"E_ECHO_NOT_TAGGABLE",
-				"Echo: TieredDriver.deleteByTag requires both tiers to be taggable",
-			);
+			throw new E_ECHO_NOT_TAGGABLE([
+				"TieredDriver.deleteByTag requires both tiers to be taggable",
+			]);
 		}
 		const local = await settle(() => l1.deleteByTag(tags));
 		const shared = await this.#invalidateL2("deleteByTag", () =>

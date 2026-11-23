@@ -136,7 +136,7 @@ describe("echo > lockTimeout without a stale value (bug 324)", () => {
 		await elapse(30);
 		expect(joiner()).toMatchObject({
 			state: "rejected",
-			value: { name: "TimeoutError" },
+			value: { code: "E_FACTORY_HARD_TIMEOUT" },
 		});
 	});
 });

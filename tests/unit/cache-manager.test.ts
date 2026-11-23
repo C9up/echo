@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { type CacheDriver, CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
+import { errors } from "../../src/index.js";
 
 function plainDriver(): CacheDriver {
 	const store = new Map<string, unknown>();
@@ -51,10 +52,14 @@ describe("echo > CacheManager > prefix and TTL routing", () => {
 		expect(spy).toHaveBeenLastCalledWith("k", "v", 5);
 	});
 
-	it("set() throws TypeError on null/undefined values (caching nothing is a bug)", async () => {
+	it("set() throws E_UNDEFINED_VALUE on null/undefined values (caching nothing is a bug)", async () => {
 		const cache = new CacheManager(plainDriver());
-		await expect(cache.set("k", null)).rejects.toBeInstanceOf(TypeError);
-		await expect(cache.set("k", undefined)).rejects.toBeInstanceOf(TypeError);
+		await expect(cache.set("k", null)).rejects.toBeInstanceOf(
+			errors.E_UNDEFINED_VALUE,
+		);
+		await expect(cache.set("k", undefined)).rejects.toBeInstanceOf(
+			errors.E_UNDEFINED_VALUE,
+		);
 	});
 });
 
@@ -73,12 +78,12 @@ describe("echo > CacheManager > tagging support detection", () => {
 		);
 	});
 
-	it("setWithTags rejects null/undefined values via the same TypeError as set", async () => {
+	it("setWithTags rejects null/undefined values via the same E_UNDEFINED_VALUE as set", async () => {
 		const driver = new MemoryDriver();
 		try {
 			const cache = new CacheManager(driver);
 			await expect(cache.setWithTags("k", null, ["t"])).rejects.toBeInstanceOf(
-				TypeError,
+				errors.E_UNDEFINED_VALUE,
 			);
 		} finally {
 			driver.destroy();

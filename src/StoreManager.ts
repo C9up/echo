@@ -27,7 +27,7 @@ import {
 	type TieredDriverOptions,
 } from "./drivers/TieredDriver.js";
 import type { Duration } from "./duration.js";
-import { EchoError } from "./errors.js";
+import { E_ECHO_INVALID_CONFIG, E_ECHO_UNKNOWN_STORE } from "./errors.js";
 import { quasarBus, quasarConnection } from "./quasar.js";
 import type { CacheDriver, CacheEmitter, CacheEventMap } from "./types.js";
 
@@ -151,16 +151,14 @@ export class Store {
 		}
 		const only = l1 ?? l2;
 		if (only === undefined) {
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
+			throw new E_ECHO_INVALID_CONFIG([
 				"Echo: a store needs a layer — call useL1Layer() or useL2Layer() on it.",
-			);
+			]);
 		}
 		if (this.#bus) {
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
+			throw new E_ECHO_INVALID_CONFIG([
 				"Echo: a bus only means something with two layers — it keeps each instance's L1 in step. Add useL2Layer(), or drop useBus().",
-			);
+			]);
 		}
 		return { ...this.#options, driver: only };
 	}
@@ -269,10 +267,9 @@ export class CacheStoreManager {
 	constructor(config: MultiStoreConfig) {
 		this.#config = config;
 		if (!this.#declared(config.default)) {
-			throw new EchoError(
-				"E_ECHO_UNKNOWN_STORE",
-				`Echo: default store "${config.default}" is not defined in stores`,
-			);
+			throw new E_ECHO_UNKNOWN_STORE([
+				`default store "${config.default}" is not defined in stores`,
+			]);
 		}
 	}
 
@@ -289,10 +286,9 @@ export class CacheStoreManager {
 		if (!Object.hasOwn(this.#config.stores, name)) return undefined;
 		const declared: unknown = this.#config.stores[name];
 		if (!isStoreDeclaration(declared)) {
-			throw new EchoError(
-				"E_ECHO_INVALID_CONFIG",
+			throw new E_ECHO_INVALID_CONFIG([
 				`Echo: cache store "${name}" is not a store — declare it with store().useL1Layer(…) or as { driver: drivers.memory() }`,
-			);
+			]);
 		}
 		return declared;
 	}
@@ -310,10 +306,7 @@ export class CacheStoreManager {
 
 		const declared = this.#declared(store);
 		if (!declared) {
-			throw new EchoError(
-				"E_ECHO_UNKNOWN_STORE",
-				`Echo: unknown cache store "${store}"`,
-			);
+			throw new E_ECHO_UNKNOWN_STORE([`unknown cache store "${store}"`]);
 		}
 		const cfg = entryOf(declared);
 		const manager = new CacheManager(cfg.driver({ store }), {

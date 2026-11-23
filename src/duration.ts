@@ -47,7 +47,7 @@ const UNIT_SECONDS: Record<string, number> = {
 	weeks: 604_800,
 };
 
-import { InvalidDurationError } from "./errors.js";
+import { E_ECHO_INVALID_DURATION } from "./errors.js";
 
 const DURATION_RE = /^\s*(-?\d+(?:\.\d+)?)\s*([a-z]+)?\s*$/i;
 
@@ -58,16 +58,16 @@ const DURATION_RE = /^\s*(-?\d+(?:\.\d+)?)\s*([a-z]+)?\s*$/i;
 export function parseDuration(value: string): number {
 	const match = DURATION_RE.exec(value);
 	if (!match) {
-		throw new InvalidDurationError(`Echo: invalid duration string "${value}"`);
+		throw new E_ECHO_INVALID_DURATION([`invalid duration string "${value}"`]);
 	}
 	const amount = Number(match[1]);
 	const unit = match[2]?.toLowerCase();
 	if (unit === undefined) return amount;
 	const factor = UNIT_SECONDS[unit];
 	if (factor === undefined) {
-		throw new InvalidDurationError(
-			`Echo: unknown duration unit "${unit}" in "${value}"`,
-		);
+		throw new E_ECHO_INVALID_DURATION([
+			`unknown duration unit "${unit}" in "${value}"`,
+		]);
 	}
 	return amount * factor;
 }
@@ -80,7 +80,7 @@ export function parseDuration(value: string): number {
  *   the past means already expired, and the writers drop the entry rather
  *   than store it. It used to map to `0`, so a TTL computed from data — a
  *   token that had already expired — cached its value forever.
- * @throws {InvalidDurationError} for NaN, which means nothing at all.
+ * @throws {E_ECHO_INVALID_DURATION} for NaN, which means nothing at all.
  */
 export function resolveTtlSeconds(
 	ttl: Duration | undefined,
@@ -99,9 +99,9 @@ export function resolveTtlSeconds(
  */
 export function checkTtlSeconds(seconds: number): number {
 	if (Number.isNaN(seconds)) {
-		throw new InvalidDurationError(
-			"Echo: a TTL of NaN is not a duration — pass a number of seconds, a string like '5m', or null for no expiry",
-		);
+		throw new E_ECHO_INVALID_DURATION([
+			"a TTL of NaN is not a duration — pass a number of seconds, a string like '5m', or null for no expiry",
+		]);
 	}
 	return seconds === Number.POSITIVE_INFINITY ? 0 : seconds;
 }

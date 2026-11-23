@@ -1,7 +1,7 @@
 import "./augmentations.js";
 import { type CacheConfig, CacheManager } from "./CacheManager.js";
 import { MemoryDriver } from "./drivers/MemoryDriver.js";
-import { EchoError } from "./errors.js";
+import { E_ECHO_INVALID_CONFIG, E_ECHO_UNSUPPORTED_DRIVER } from "./errors.js";
 import { CacheStoreManager, type MultiStoreConfig } from "./StoreManager.js";
 import { clearCache, getCache, setCache } from "./services/main.js";
 import type { CacheEmitter } from "./types.js";
@@ -129,20 +129,14 @@ export default class EchoProvider {
 					? (Reflect.get(config, "driver") ?? "memory")
 					: "memory";
 			if (driver !== "memory") {
-				throw new EchoError(
-					"E_ECHO_UNSUPPORTED_DRIVER",
-					`[echo] Unsupported driver '${String(driver)}' for default provider — ` +
-						"wire CacheManager yourself for non-memory drivers, or use the " +
-						"multi-store `{ default, stores }` config.",
-				);
+				throw new E_ECHO_UNSUPPORTED_DRIVER([String(driver)]);
 			}
 			// Checked, not asserted: a config file is the application's, and
 			// a prefix that is not a string would otherwise reach every key.
 			if (!isSingleStoreConfig(config)) {
-				throw new EchoError(
-					"E_ECHO_INVALID_CONFIG",
+				throw new E_ECHO_INVALID_CONFIG([
 					"[echo] config/cache.ts must export an object — `{ prefix, ttl, … }` for one store, or `{ default, stores }` for several.",
-				);
+				]);
 			}
 			return new CacheManager(new MemoryDriver(), { ...config, emitter });
 		});

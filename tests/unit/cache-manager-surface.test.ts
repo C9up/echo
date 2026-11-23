@@ -10,7 +10,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
-import { TimeoutError } from "../../src/errors.js";
+import { E_FACTORY_HARD_TIMEOUT } from "../../src/errors.js";
 
 const drivers: MemoryDriver[] = [];
 const make = (options: ConstructorParameters<typeof CacheManager>[1] = {}) => {
@@ -350,7 +350,7 @@ describe("echo > getOrSet timeouts", () => {
 			.catch((error: unknown) => error);
 
 		await vi.advanceTimersByTimeAsync(10);
-		expect(await call).toBeInstanceOf(TimeoutError);
+		expect(await call).toBeInstanceOf(E_FACTORY_HARD_TIMEOUT);
 	});
 
 	it("serves the stale value when the refresh outruns the soft timeout", async () => {

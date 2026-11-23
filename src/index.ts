@@ -28,17 +28,7 @@ export { isBusMessage, TieredDriver } from "./drivers/TieredDriver.js";
 export type { Duration } from "./duration.js";
 export { parseDuration, resolveTtlSeconds } from "./duration.js";
 export type { EchoProviderConfig } from "./EchoProvider.js";
-export {
-	EchoError,
-	errors,
-	FactoryError,
-	InvalidArgumentError,
-	InvalidDurationError,
-	L2CacheError,
-	LockTimeoutError,
-	TimeoutError,
-	UndefinedValueError,
-} from "./errors.js";
+export * as errors from "./errors.js";
 export {
 	CacheStoreManager,
 	type DriverContext,

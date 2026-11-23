@@ -3,6 +3,8 @@
  * (bug 331): upstream's identifiers verbatim where upstream has one,
  * `E_ECHO_*` for the rest.
  */
+
+import { Exception } from "@c9up/flare";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type CacheDriver, CacheManager } from "../../src/CacheManager.js";
 import { MemoryDriver } from "../../src/drivers/MemoryDriver.js";
@@ -11,14 +13,7 @@ import {
 	RedisDriver,
 } from "../../src/drivers/RedisDriver.js";
 import { TieredDriver } from "../../src/drivers/TieredDriver.js";
-import {
-	EchoError,
-	errors,
-	FactoryError,
-	L2CacheError,
-	TimeoutError,
-	UndefinedValueError,
-} from "../../src/errors.js";
+import { errors } from "../../src/index.js";
 import { CacheStoreManager, drivers, store } from "../../src/StoreManager.js";
 
 const created: MemoryDriver[] = [];
@@ -71,14 +66,18 @@ describe("echo > upstream error codes", () => {
 		await vi.advanceTimersByTimeAsync(10);
 		const failure = await call;
 
-		expect(failure).toBeInstanceOf(TimeoutError);
-		expect(failure).toBeInstanceOf(EchoError);
-		expect(failure).toMatchObject({ code: "E_FACTORY_HARD_TIMEOUT" });
+		expect(failure).toBeInstanceOf(errors.E_FACTORY_HARD_TIMEOUT);
+		expect(failure).toBeInstanceOf(Exception);
+		expect(failure).toMatchObject({
+			code: "E_FACTORY_HARD_TIMEOUT",
+			key: "k",
+			message: "Factory has timed out after waiting for hard timeout",
+		});
 	});
 
 	it("a factory failure is E_FACTORY_ERROR", async () => {
 		const cache = new CacheManager(memory());
-		const seen: FactoryError[] = [];
+		const seen: InstanceType<typeof errors.E_FACTORY_ERROR>[] = [];
 		await cache
 			.getOrSet({
 				key: "k",
@@ -89,28 +88,55 @@ describe("echo > upstream error codes", () => {
 			})
 			.catch(() => {});
 
-		expect(seen[0]).toMatchObject({ code: "E_FACTORY_ERROR", key: "k" });
+		expect(seen[0]).toMatchObject({
+			code: "E_FACTORY_ERROR",
+			key: "k",
+			message: "Factory has thrown an error",
+		});
 	});
 
-	it("caching null is E_UNDEFINED_VALUE, still a TypeError", async () => {
+	it("caching null is E_UNDEFINED_VALUE", async () => {
 		const cache = new CacheManager(memory());
 		const failure = await cache
 			.set({ key: "k", value: null })
 			.catch((error: unknown) => error);
 
-		expect(failure).toBeInstanceOf(UndefinedValueError);
-		expect(failure).toBeInstanceOf(TypeError);
-		expect(failure).toMatchObject({ code: "E_UNDEFINED_VALUE" });
+		expect(failure).toBeInstanceOf(errors.E_UNDEFINED_VALUE);
+		expect(failure).toMatchObject({
+			code: "E_UNDEFINED_VALUE",
+			message: "Cannot set undefined value in the cache, key: k",
+		});
 		await expect(memory().set("k", undefined)).rejects.toThrow(
 			code("E_UNDEFINED_VALUE"),
 		);
 	});
 
-	it("exports the map upstream exports", () => {
-		expect(errors.E_FACTORY_ERROR).toBe(FactoryError);
-		expect(errors.E_FACTORY_HARD_TIMEOUT).toBe(TimeoutError);
-		expect(errors.E_UNDEFINED_VALUE).toBe(UndefinedValueError);
-		expect(errors.E_L2_CACHE_ERROR).toBe(L2CacheError);
+	it("exports upstream's keys on the errors namespace, each a flare Exception", () => {
+		const down = new Error("down");
+		const l2 = new errors.E_L2_CACHE_ERROR(down, { operation: "get" });
+		expect(l2).toBeInstanceOf(Exception);
+		expect(l2.status).toBe(500);
+		expect(l2).toMatchObject({
+			code: "E_L2_CACHE_ERROR",
+			message: "An error occurred while interacting with the L2 cache",
+			operation: "get",
+		});
+		expect(l2.cause).toBe(down);
+		const soft = new errors.E_FACTORY_SOFT_TIMEOUT("k");
+		expect(soft).toMatchObject({
+			code: "E_FACTORY_SOFT_TIMEOUT",
+			key: "k",
+			message: "Factory has timed out after waiting for soft timeout",
+		});
+		for (const key of [
+			"E_FACTORY_ERROR",
+			"E_FACTORY_SOFT_TIMEOUT",
+			"E_FACTORY_HARD_TIMEOUT",
+			"E_UNDEFINED_VALUE",
+			"E_L2_CACHE_ERROR",
+		] as const) {
+			expect(errors[key].code).toBe(key);
+		}
 	});
 });
 

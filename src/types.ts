@@ -4,7 +4,11 @@
  */
 
 import type { Duration } from "./duration.js";
-import type { FactoryError, LockTimeoutError } from "./errors.js";
+import type {
+	E_ECHO_LOCK_TIMEOUT,
+	E_FACTORY_ERROR,
+	E_FACTORY_HARD_TIMEOUT,
+} from "./errors.js";
 
 /**
  * A driver-level entry. `stale` is `true` when the value is past its logical
@@ -155,17 +159,17 @@ export interface GetOrSetOptions<T> {
 	graceBackoff?: Duration;
 	/** Soft timeout: on a stale hit, return the stale value if the factory is slower, then refresh in the background. */
 	timeout?: Duration;
-	/** Hard timeout: reject with {@link TimeoutError} if the factory exceeds it (even without a stale fallback). */
+	/** Hard timeout: reject with {@link E_FACTORY_HARD_TIMEOUT} if the factory exceeds it (even without a stale fallback). */
 	hardTimeout?: Duration;
 	/**
 	 * Max time to wait on another caller's in-flight factory for the same key
 	 * (single-flight lock). Past it the stale value is returned when there is
-	 * one, and a {@link LockTimeoutError} is thrown when there is not.
+	 * one, and a {@link E_ECHO_LOCK_TIMEOUT} is thrown when there is not.
 	 */
 	lockTimeout?: Duration;
 	tags?: string[];
 	/** Observe factory failures (foreground and background). */
-	onFactoryError?: (error: FactoryError) => void;
+	onFactoryError?: (error: E_FACTORY_ERROR) => void;
 }
 
 export type GetOrSetForeverOptions<T> = Omit<GetOrSetOptions<T>, "ttl">;
