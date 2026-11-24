@@ -128,7 +128,7 @@ export const E_ECHO_INVALID_DURATION = createError<[string]>(
 
 /** A method received an argument it cannot work with. */
 export const E_ECHO_INVALID_ARGUMENT = createError<[string]>(
-	"Echo: %s requires a factory function",
+	"Echo: %s",
 	"E_ECHO_INVALID_ARGUMENT",
 );
 

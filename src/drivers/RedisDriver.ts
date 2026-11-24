@@ -15,7 +15,7 @@
 
 import { claimed } from "../claim.js";
 import { checkTtlSeconds } from "../duration.js";
-import { E_ECHO_SCAN_UNSUPPORTED } from "../errors.js";
+import { E_ECHO_INVALID_CONFIG, E_ECHO_SCAN_UNSUPPORTED } from "../errors.js";
 import type { CacheEntry, DriverSetOptions, TaggableDriver } from "../types.js";
 import { hasEnded } from "../vendor/quasarConnection.js";
 
@@ -56,6 +56,67 @@ interface Envelope {
 /** Escape Redis MATCH glob metacharacters so the pattern matches literally. */
 function escapeGlob(literal: string): string {
 	return literal.replace(/[*?[\]\\]/g, "\\$&");
+}
+
+/**
+ * The prefix a connection adds to the key of every command (ioredis'
+ * `keyPrefix`), read off a bare ioredis client or a quasar connection's
+ * `ioConnection`. Empty when the client does not say: it is then taken to
+ * have none. A prefix that is set but is not a string cannot be put in a
+ * SCAN pattern, so the clear that needs it refuses rather than deleting
+ * nothing.
+ */
+function connectionKeyPrefix(client: RedisClient): string {
+	for (const holder of [client, Reflect.get(client, "ioConnection")]) {
+		const options: unknown = Reflect.get(Object(holder), "options");
+		const prefix: unknown = Reflect.get(Object(options), "keyPrefix");
+		if (prefix === undefined || prefix === null) continue;
+		if (typeof prefix === "string") return prefix;
+		throw new E_ECHO_INVALID_CONFIG([
+			"The Redis connection's keyPrefix is not a string, so clear() cannot find the store's keys under it",
+		]);
+	}
+	return "";
+}
+
+/**
+ * Where SCAN has to run: every master of an ioredis cluster — SCAN on the
+ * cluster itself walks one node only — or the client itself.
+ */
+function scanTargets(client: RedisClient): unknown[] {
+	const io: unknown = Reflect.get(client, "ioConnection") ?? client;
+	const nodes: unknown = Reflect.get(Object(io), "nodes");
+	if (typeof nodes !== "function") return [client];
+	const masters: unknown = Reflect.apply(nodes, io, ["master"]);
+	return Array.isArray(masters) && masters.length > 0 ? masters : [client];
+}
+
+/**
+ * One SCAN page on `node`: the next cursor and the keys it matched. Called ON
+ * the node: ioredis reads `this` inside scan(), so a detached reference threw.
+ */
+async function scanPage(
+	node: unknown,
+	cursor: string,
+	pattern: string,
+): Promise<[string, string[]]> {
+	const scan: unknown = Reflect.get(Object(node), "scan");
+	if (typeof scan !== "function") throw new E_ECHO_SCAN_UNSUPPORTED();
+	const reply: unknown = await Reflect.apply(scan, node, [
+		cursor,
+		"MATCH",
+		pattern,
+		"COUNT",
+		100,
+	]);
+	if (!Array.isArray(reply)) return ["0", []];
+	const [next, keys]: unknown[] = reply;
+	return [
+		typeof next === "string" ? next : "0",
+		Array.isArray(keys)
+			? keys.filter((key): key is string => typeof key === "string")
+			: [],
+	];
 }
 
 /** JSON, or `undefined` when the text is not JSON at all. */
@@ -345,7 +406,17 @@ export class RedisDriver implements TaggableDriver {
 		});
 	}
 
-	/** Walk a SCAN cursor over the keys starting with `literal`, a page at a time. */
+	/**
+	 * Walk a SCAN cursor over the keys starting with `literal`, a page at a
+	 * time, handing them over as every other command names them.
+	 *
+	 * A connection with a `keyPrefix` adds it to the key of every command but
+	 * not to the MATCH pattern of SCAN, which answers full key names. So the
+	 * pattern carries the connection prefix, and each key loses it again
+	 * before the commands that take it add it back; without that, a clear
+	 * matched none of the store's keys and resolved. On a cluster every master
+	 * is scanned.
+	 */
 	async #scan(
 		literal: string,
 		onPage: (keys: string[]) => Promise<void>,
@@ -354,22 +425,20 @@ export class RedisDriver implements TaggableDriver {
 		if (typeof client.scan !== "function") {
 			throw new E_ECHO_SCAN_UNSUPPORTED();
 		}
-		const pattern = `${escapeGlob(literal)}*`;
-		let cursor = "0";
-		do {
-			// Called ON the client: ioredis reads `this` inside scan(), so a
-			// detached reference threw and left every key in place.
-			const [nextCursor, keys] = await client.scan(
-				cursor,
-				"MATCH",
-				pattern,
-				"COUNT",
-				100,
-			);
-			cursor = nextCursor;
-			const owned = keys.filter((key) => key.startsWith(literal));
-			if (owned.length > 0) await onPage(owned);
-		} while (cursor !== "0");
+		const connectionPrefix = connectionKeyPrefix(client);
+		const full = `${connectionPrefix}${literal}`;
+		const pattern = `${escapeGlob(full)}*`;
+		for (const node of scanTargets(client)) {
+			let cursor = "0";
+			do {
+				const [nextCursor, keys] = await scanPage(node, cursor, pattern);
+				cursor = nextCursor;
+				const owned = keys
+					.filter((key) => key.startsWith(full))
+					.map((key) => key.slice(connectionPrefix.length));
+				if (owned.length > 0) await onPage(owned);
+			} while (cursor !== "0");
+		}
 	}
 
 	async has(key: string): Promise<boolean> {

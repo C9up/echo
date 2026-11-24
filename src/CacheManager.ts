@@ -815,8 +815,20 @@ export class CacheManager {
 	 * A cache view scoped under an extra key prefix (Adonis `cache.namespace()`).
 	 * Shares the SAME driver, defaults, emitter AND single-flight state, so a
 	 * `getOrSet` stampede is collapsed across namespace views of the same key.
+	 *
+	 * NAMED DEVIATION, stricter than upstream: a name that is not a non-empty
+	 * string is refused. Upstream gives `""` the root view back (its child
+	 * strips the trailing separator off the prefix) and turns `undefined` into
+	 * a namespace named "undefined". A missing tenant id then widened a
+	 * tenant's view to the whole store, and its `clear()` emptied every
+	 * tenant; checked at run time, since the type does not stop `undefined`.
 	 */
 	namespace(ns: string): CacheManager {
+		if (typeof ns !== "string" || ns.length === 0) {
+			throw new E_ECHO_INVALID_ARGUMENT([
+				"namespace() requires a non-empty string name",
+			]);
+		}
 		return new CacheManager(
 			this.#driver,
 			{
@@ -844,7 +856,9 @@ export class CacheManager {
 	): NormalizedGetOrSet<T> {
 		if (typeof a === "string") {
 			if (typeof c !== "function") {
-				throw new E_ECHO_INVALID_ARGUMENT(["getOrSet(key, ttl, factory)"]);
+				throw new E_ECHO_INVALID_ARGUMENT([
+					"getOrSet(key, ttl, factory) requires a factory function",
+				]);
 			}
 			return {
 				key: a,
@@ -863,7 +877,9 @@ export class CacheManager {
 		// untyped made the call fail with a bare TypeError from deep inside the
 		// single-flight bookkeeping, instead of a refusal naming the argument.
 		if (typeof a.factory !== "function") {
-			throw new E_ECHO_INVALID_ARGUMENT(["getOrSet({ key, factory })"]);
+			throw new E_ECHO_INVALID_ARGUMENT([
+				"getOrSet({ key, factory }) requires a factory function",
+			]);
 		}
 		return {
 			key: a.key,

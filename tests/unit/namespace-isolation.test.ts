@@ -88,3 +88,38 @@ describe("echo > tags are scoped to their namespace (bug 306)", () => {
 		expect(await b.get({ key: "doc" })).toBeUndefined();
 	});
 });
+
+describe("echo > a namespace needs a name", () => {
+	/** What an application hands over when a tenant id is missing. */
+	const missing: readonly unknown[] = ["", undefined, null, 42];
+
+	for (const name of missing) {
+		it(`refuses namespace(${JSON.stringify(name) ?? "undefined"}) instead of handing back the root view`, async () => {
+			const cache = root();
+			await cache.set({ key: "feature-flags", value: { internal: true } });
+			await cache
+				.namespace("tenant-a")
+				.set({ key: "permissions:7", value: ["owner"] });
+
+			// Through Reflect: the type stops these, plain JavaScript does not.
+			expect(() => Reflect.apply(cache.namespace, cache, [name])).toThrow(
+				expect.objectContaining({ code: "E_ECHO_INVALID_ARGUMENT" }),
+			);
+
+			expect(
+				await cache.namespace("tenant-a").get({ key: "permissions:7" }),
+			).toEqual(["owner"]);
+			expect(await cache.get({ key: "feature-flags" })).toEqual({
+				internal: true,
+			});
+		});
+	}
+
+	it("refuses an empty name on a nested view too", () => {
+		const tenant = root().namespace("tenant-a");
+		expect(() => tenant.namespace("")).toThrow(
+			expect.objectContaining({ code: "E_ECHO_INVALID_ARGUMENT" }),
+		);
+		expect(tenant.namespace("users")).toBeInstanceOf(CacheManager);
+	});
+});

@@ -128,6 +128,19 @@ describe("echo > cache:clear", () => {
 		expect(await cache.get({ key: "b" })).toBe(2);
 	});
 
+	it("refuses an empty --namespace instead of clearing the whole store", async () => {
+		const { cache } = wire();
+		await cache.set({ key: "a", value: 1 });
+		await cache.namespace("users").set({ key: "1", value: "u" });
+
+		const result = await run("cache:clear", { namespace: "" });
+
+		expect(result.exitCode()).toBe(1);
+		expect(result.logs[0]?.[1]).toMatch(/--namespace option needs a name/);
+		expect(await cache.get({ key: "a" })).toBe(1);
+		expect(await cache.namespace("users").get({ key: "1" })).toBe("u");
+	});
+
 	it("refuses --namespace with --tags", async () => {
 		const { cache } = wire();
 		await cache.set({ key: "a", value: 1 });

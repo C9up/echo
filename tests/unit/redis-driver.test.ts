@@ -304,6 +304,91 @@ describe("echo > RedisDriver > flush", () => {
 		const driver = new RedisDriver(fake.client);
 		await expect(driver.flush()).rejects.toThrow(/scan\(\) support/);
 	});
+
+	/**
+	 * A master of a cluster as the driver reaches it: SCAN only, over its own
+	 * share of the keys, answering them with the connection prefix on, as a
+	 * server does.
+	 */
+	function clusterNode(keys: () => string[], connectionPrefix: string) {
+		return {
+			scan: async (
+				_cursor: string,
+				_match: "MATCH",
+				pattern: string,
+			): Promise<[string, string[]]> => {
+				const matcher = globToRegExp(pattern);
+				return [
+					"0",
+					keys()
+						.map((key) => `${connectionPrefix}${key}`)
+						.filter((key) => matcher.test(key)),
+				];
+			},
+		};
+	}
+
+	it("scans every master of a cluster, with the connection prefix on and off", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		const owned = (parity: number) => () =>
+			[...fake.store.keys()].filter(
+				(key) => Number(key.slice(-1)) % 2 === parity,
+			);
+		const masters = [
+			clusterNode(owned(0), "app:"),
+			clusterNode(owned(1), "app:"),
+		];
+		const roles: unknown[] = [];
+		const client = Object.assign(fake.client, {
+			options: { keyPrefix: "app:" },
+			nodes: (role: unknown) => {
+				roles.push(role);
+				return masters;
+			},
+		});
+		const driver = new RedisDriver(client);
+		for (let i = 0; i < 6; i++) await driver.set(`k${i}`, i);
+		await driver.flush();
+		expect(roles).toEqual(["master"]);
+		expect(fake.store.size).toBe(0);
+	});
+
+	it("refuses a cluster master it cannot scan rather than skip its keys", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		const client = Object.assign(fake.client, {
+			nodes: () => [{}],
+		});
+		const driver = new RedisDriver(client);
+		await driver.set("a", 1);
+		await expect(driver.flush()).rejects.toMatchObject({
+			code: "E_ECHO_SCAN_UNSUPPORTED",
+		});
+		expect(fake.store.size).toBe(1);
+	});
+
+	it("refuses a connection keyPrefix it cannot put in a SCAN pattern", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		const client = Object.assign(fake.client, {
+			ioConnection: { options: { keyPrefix: 7 } },
+		});
+		const driver = new RedisDriver(client);
+		await driver.set("a", 1);
+		await expect(driver.flush()).rejects.toMatchObject({
+			code: "E_ECHO_INVALID_CONFIG",
+		});
+		expect(fake.store.size).toBe(1);
+	});
+
+	it("matches a connection keyPrefix literally, glob characters included", async () => {
+		const fake = createFakeRedis({ withScan: true });
+		const client = Object.assign(fake.client, {
+			options: { keyPrefix: "a*[b]:" },
+		});
+		const driver = new RedisDriver(client);
+		await driver.flush();
+		const scans = fake.calls.filter((call) => call.op === "scan");
+		expect(scans.map((call) => call.args[1])).toEqual(["a\\*\\[b\\]:cache:*"]);
+	});
 });
 
 describe("echo > RedisDriver > tagging", () => {

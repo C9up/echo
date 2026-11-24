@@ -60,6 +60,15 @@ export function cacheClearCommand(): EchoCommandClass {
 				return;
 			}
 			const tags = this.tags ?? [];
+			// `--namespace=` with nothing after it is a namespace left out by
+			// mistake, not a request to clear the whole store.
+			if (this.namespace !== undefined && this.namespace.length === 0) {
+				this.logger.error(
+					"The --namespace option needs a name. Leave it out to clear the whole store.",
+				);
+				this.exitCode = 1;
+				return;
+			}
 			if (this.namespace && tags.length > 0) {
 				this.logger.error(
 					"Cannot use --namespace and --tags options together. Please choose one or the other.",
